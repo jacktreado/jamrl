@@ -9,8 +9,8 @@
 {% endif %}#SBATCH --output={{ campaign }}/logs/roll_r{{ round }}_%A_%a.out
 
 export OMP_NUM_THREADS={{ threads_per_task }}
-export OMP_PROC_BIND=close
-export OMP_PLACES=cores
+export OMP_PROC_BIND=spread
+export OMP_PLACES=threads
 {% if parallel_mode == 'episode' %}export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 {% else %}export OPENBLAS_NUM_THREADS={{ threads_per_task }}
