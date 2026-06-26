@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --job-name=jamrl-roll-r{{ round }}
+#SBATCH --array=0-{{ workers_minus_1 }}
+#SBATCH --cpus-per-task={{ threads_per_task }}
+#SBATCH --mem={{ mem_rollout }}
+#SBATCH --time={{ time_rollout }}
+{% if partition %}#SBATCH --partition={{ partition }}
+{% endif %}{% if account %}#SBATCH --account={{ account }}
+{% endif %}#SBATCH --output={{ campaign }}/logs/roll_r{{ round }}_%A_%a.out
+
+export OMP_NUM_THREADS={{ threads_per_task }}
+export OMP_PROC_BIND=close
+export OMP_PLACES=cores
+{% if parallel_mode == 'episode' %}export OPENBLAS_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+{% else %}export OPENBLAS_NUM_THREADS={{ threads_per_task }}
+export MKL_NUM_THREADS={{ threads_per_task }}
+{% endif %}srun jamrl rollout --campaign {{ campaign }} --round {{ round }} \
+                   --worker ${SLURM_ARRAY_TASK_ID}

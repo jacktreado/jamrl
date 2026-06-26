@@ -1,0 +1,12 @@
+#!/bin/bash
+#SBATCH --job-name=jamrl-learn-r{{ round }}
+#SBATCH --cpus-per-task=4
+#SBATCH --mem={{ mem_learn }}
+#SBATCH --time={{ time_learn }}
+{% if partition %}#SBATCH --partition={{ partition }}
+{% endif %}{% if account %}#SBATCH --account={{ account }}
+{% endif %}#SBATCH --output={{ campaign }}/logs/learn_r{{ round }}_%j.out
+
+export OMP_NUM_THREADS=4
+srun jamrl learn --campaign {{ campaign }} --round {{ round }}
+# (jamrl learn submits round r+1 at its end unless STOP exists)

@@ -1,0 +1,14 @@
+#!/bin/bash
+#SBATCH --job-name=jamrl-post-r{{ round }}
+#SBATCH --array=0-{{ nshards_minus_1 }}
+#SBATCH --cpus-per-task={{ post_cpus }}
+#SBATCH --mem={{ mem_post }}
+#SBATCH --time={{ time_post }}
+{% if partition %}#SBATCH --partition={{ partition }}
+{% endif %}{% if account %}#SBATCH --account={{ account }}
+{% endif %}#SBATCH --output={{ campaign }}/logs/post_r{{ round }}_%A_%a.out
+
+export OMP_NUM_THREADS={{ post_cpus }}
+# Non-blocking analysis: reads states only, so it never stalls `learn`.
+srun jamrl postprocess --campaign {{ campaign }} --round {{ round }} \
+                       --shard ${SLURM_ARRAY_TASK_ID} --nshards {{ nshards }}

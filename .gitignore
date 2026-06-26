@@ -1,0 +1,23 @@
+# Build artifacts
+build/
+_skbuild/
+*.so
+*.o
+*.egg-info/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Campaign outputs (large)
+campaigns/
+!campaigns/.gitkeep
+
+# Local env
+.venv/
