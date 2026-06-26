@@ -15,5 +15,6 @@ export OMP_PLACES=cores
 export MKL_NUM_THREADS=1
 {% else %}export OPENBLAS_NUM_THREADS={{ threads_per_task }}
 export MKL_NUM_THREADS={{ threads_per_task }}
+{% endif %}{% if node_scratch %}export JAMRL_NODE_SCRATCH='{{ node_scratch }}'
 {% endif %}srun jamrl rollout --campaign {{ campaign }} --round {{ round }} \
                    --worker ${SLURM_ARRAY_TASK_ID}

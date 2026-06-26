@@ -45,7 +45,7 @@ def ctx_rollout(cfg, camp, r):
     return dict(round=r, workers_minus_1=cfg.workers - 1, threads_per_task=cfg.threads_per_task,
                 mem_rollout=cfg.mem_rollout, time_rollout=cfg.time_rollout,
                 partition=cfg.partition, account=cfg.account, campaign=camp,
-                parallel_mode=cfg.parallel_mode)
+                parallel_mode=cfg.parallel_mode, node_scratch=cfg.node_scratch)
 
 
 def ctx_learn(cfg, camp, r):
@@ -57,7 +57,8 @@ def ctx_post(cfg, camp, r):
     ns = _post_shards(cfg)
     return dict(round=r, nshards=ns, nshards_minus_1=ns - 1, post_cpus=4,
                 mem_post=cfg.mem_post, time_post=cfg.time_post,
-                partition=cfg.partition, account=cfg.account, campaign=camp)
+                partition=cfg.partition, account=cfg.account, campaign=camp,
+                node_scratch=cfg.node_scratch)
 
 
 def parse_jobid(text: str):

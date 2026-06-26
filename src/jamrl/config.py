@@ -71,6 +71,9 @@ class Config:
     save_hessian: str = "sparse"  # none | spectrum | sparse | dense
     hessian_stride: int = 1
     compression: str = "gzip"
+    # node-local scratch staging (HPC): write heavy outputs here, copy to the
+    # persistent campaign at task end. Supports $VARS (e.g. "$TMPDIR"); empty=off.
+    node_scratch: str = ""
     # slurm
     partition: str = ""
     account: str = ""

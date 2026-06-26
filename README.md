@@ -74,7 +74,10 @@ jamrl plot   --campaign campaigns/smoke
 # full cluster campaign (one submission perpetuates all rounds)
 jamrl submit --N 1024 --rounds 1000 --workers 64 --episodes-per-worker 8 \
              --threads-per-task 16 --partition cpu --account myproj \
-             --save-hessian spectrum --name big1k
+             --save-hessian spectrum \
+             --campaign-root /home/data/$USER/campaigns \
+             --node-scratch '$TMPDIR' \
+             --name big1k
 jamrl submit --N 1024 --name big1k --test-only     # inspect wiring, don't queue
 
 # resume / stop
@@ -87,6 +90,25 @@ jamrl eval --campaign campaigns/big1k --round 500 --N 4096
 
 A YAML config can replace flags: `jamrl submit --config big1k.yaml` (CLI flags
 still override YAML).
+
+### HPC storage: persistent campaign + node-local scratch
+
+Point `--campaign-root` at durable shared storage (e.g. `/home/data/$USER/...`)
+— that is the campaign's source of truth and the only thing that crosses node
+boundaries. Set `--node-scratch '$TMPDIR'` (or your cluster's node-local scratch,
+e.g. `/scratch/local/$SLURM_JOB_ID`) to make each rollout/postprocess task write
+its **heavy outputs** (trajectory `npz`, jammed-state `h5`, spectra `npz`) to the
+node's fast local disk and copy them to the persistent campaign when the task
+finishes. This keeps the storm of many small concurrent writes off the shared
+filesystem.
+
+Reads come straight from the persistent campaign, and shared flock-guarded files
+(`null_cache.h5`, the summary parquets) stay there too — a per-node scratch copy
+could not be shared across the nodes of a distributed campaign. Staging is
+transparent: unset (the default) writes happen in place, so `run-local` and
+laptop runs are unaffected. The setting is also honored via the
+`JAMRL_NODE_SCRATCH` environment variable (overrides the config), so an admin can
+set a cluster default without editing configs.
 
 ## Layout
 

@@ -9,6 +9,7 @@
 {% endif %}#SBATCH --output={{ campaign }}/logs/post_r{{ round }}_%A_%a.out
 
 export OMP_NUM_THREADS={{ post_cpus }}
-# Non-blocking analysis: reads states only, so it never stalls `learn`.
+{% if node_scratch %}export JAMRL_NODE_SCRATCH='{{ node_scratch }}'
+{% endif %}# Non-blocking analysis: reads states only, so it never stalls `learn`.
 srun jamrl postprocess --campaign {{ campaign }} --round {{ round }} \
                        --shard ${SLURM_ARRAY_TASK_ID} --nshards {{ nshards }}

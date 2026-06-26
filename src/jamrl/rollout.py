@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from jamrl import _core, config, policy, seeding, storage
+from jamrl import _core, config, policy, seeding, staging, storage
 
 
 def ensure_null_cache(cfg, camp, seeds) -> list[float]:
@@ -49,10 +49,14 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
         proto, pol, [int(s) for s in seeds], ec, sf, pm, [float(x) for x in phin]
     )
 
-    storage.write_rollout_npz(storage.rollout_path(camp, r, k), episodes)
+    # Heavy outputs go to node-local scratch (if configured) and are copied to
+    # the persistent campaign on completion; otherwise written in place.
     radii = np.asarray(proto.radii)
-    storage.write_states_h5(
-        storage.states_path(camp, r, k), episodes, radii, cfg.P,
-        save_hessian=cfg.save_hessian, compression=cfg.compression,
-    )
+    with staging.output(storage.rollout_path(camp, r, k), cfg) as rp:
+        storage.write_rollout_npz(rp, episodes)
+    with staging.output(storage.states_path(camp, r, k), cfg) as sp:
+        storage.write_states_h5(
+            sp, episodes, radii, cfg.P,
+            save_hessian=cfg.save_hessian, compression=cfg.compression,
+        )
     return episodes

@@ -11,7 +11,7 @@ import os
 
 import numpy as np
 
-from jamrl import _core, storage
+from jamrl import _core, staging, storage
 
 
 def _system_from_state(N, P, phi0, s, L, gamma):
@@ -62,14 +62,15 @@ def run_postprocess(cfg, camp, r, shard=0, nshards=1, dos_k=60):
 
     os.makedirs(storage.analysis_dir(camp, r), exist_ok=True)
     out_npz = os.path.join(storage.analysis_dir(camp, r), f"spectra_shard_{shard:03d}.npz")
-    with storage.atomic_path(out_npz) as tmp:
-        with open(tmp, "wb") as f:
-            np.savez_compressed(
-                f, seeds=np.asarray(seeds, np.uint64), B=np.asarray(Bs),
-                G=np.asarray(Gs), dz=np.asarray(dzs), phi=np.asarray(phis),
-                omega_star=np.asarray(omegas),
-                eig=np.array(eig_list, dtype=object),
-            )
+    with staging.output(out_npz, cfg) as op:  # node-scratch -> persistent
+        with storage.atomic_path(op) as tmp:
+            with open(tmp, "wb") as f:
+                np.savez_compressed(
+                    f, seeds=np.asarray(seeds, np.uint64), B=np.asarray(Bs),
+                    G=np.asarray(Gs), dz=np.asarray(dzs), phi=np.asarray(phis),
+                    omega_star=np.asarray(omegas),
+                    eig=np.array(eig_list, dtype=object),
+                )
 
     n = len(mine)
     row = {
