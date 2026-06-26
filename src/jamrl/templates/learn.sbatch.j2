@@ -8,5 +8,5 @@
 {% endif %}#SBATCH --output={{ campaign }}/logs/learn_r{{ round }}_%j.out
 
 export OMP_NUM_THREADS=4
-srun jamrl learn --campaign {{ campaign }} --round {{ round }}
+srun --cpu-bind=none jamrl learn --campaign {{ campaign }} --round {{ round }}
 # (jamrl learn submits round r+1 at its end unless STOP exists)
