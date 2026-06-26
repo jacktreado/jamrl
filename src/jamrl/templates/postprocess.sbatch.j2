@@ -11,5 +11,5 @@
 export OMP_NUM_THREADS={{ post_cpus }}
 {% if node_scratch %}export JAMRL_NODE_SCRATCH='{{ node_scratch }}'
 {% endif %}# Non-blocking analysis: reads states only, so it never stalls `learn`.
-srun jamrl postprocess --campaign {{ campaign }} --round {{ round }} \
+srun --cpu-bind=none jamrl postprocess --campaign {{ campaign }} --round {{ round }} \
                        --shard ${SLURM_ARRAY_TASK_ID} --nshards {{ nshards }}
