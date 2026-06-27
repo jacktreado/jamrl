@@ -117,6 +117,19 @@ def cmd_compact(args):
     return 0
 
 
+def cmd_analyze(args):
+    from jamrl import campaign_analysis
+
+    out = campaign_analysis.build_campaign_analysis(
+        args.campaign,
+        spectra_stride=args.spectra_stride,
+        traj_stride=args.traj_stride,
+        out_path=args.out,
+    )
+    print(f"[analyze] wrote {out}")
+    return 0
+
+
 def cmd_eval(args):
     from jamrl import learn
 
@@ -181,6 +194,16 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--round", type=int, required=True)
     pe.add_argument("--N", type=int, default=0)
     pe.set_defaults(func=cmd_eval)
+
+    pan = sub.add_parser("analyze", help="condense campaign into portable h5 for offline notebooks")
+    pan.add_argument("--campaign", required=True)
+    pan.add_argument("--spectra-stride", type=int, default=10,
+                     help="sample VDOS/mechanics every N rounds (default: 10)")
+    pan.add_argument("--traj-stride", type=int, default=25,
+                     help="sample trajectory/obs/action data every N rounds (default: 25)")
+    pan.add_argument("--out", default=None,
+                     help="output path (default: <campaign>/analysis/campaign_analysis.h5)")
+    pan.set_defaults(func=cmd_analyze)
 
     return p
 
