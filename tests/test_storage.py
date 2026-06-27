@@ -79,7 +79,7 @@ def test_rollout_worker_writes_valid_data(tmp_path):
     assert data["done"].sum() == E  # one terminal per episode
 
     # null cache populated and reused (no recompute)
-    assert os.path.exists(storage.null_cache_path(camp))
+    assert os.path.isdir(storage.null_cache_dir(camp))
     seeds = seeding.worker_seeds(cfg.seed, 0, 0, E)
     cached = storage.null_cache_get(camp, [(cfg.N, cfg.P, int(s)) for s in seeds])
     assert len(cached) == E

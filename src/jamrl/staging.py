@@ -12,8 +12,8 @@ therefore **per-task stage-out of heavy writes**: a task writes its big outputs
 to node scratch and copies each finished file to its persistent location when
 the write completes. Reads still come straight from the persistent campaign
 (few, and reads do not hammer the metadata server the way concurrent writes do),
-and genuinely shared files — ``null_cache.h5`` and the summary parquets, guarded
-by cross-node file locks — stay on the persistent filesystem.
+and genuinely shared state — the per-key ``null_cache/`` shards (each written
+atomically) and the summary parquets — stays on the persistent filesystem.
 
 Enable by setting ``node_scratch`` (config field / ``--node-scratch``) or the
 ``JAMRL_NODE_SCRATCH`` environment variable to a path, typically ``$TMPDIR``

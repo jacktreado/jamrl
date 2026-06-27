@@ -32,11 +32,12 @@ def states_path(camp, r, k):    return _p(states_dir(camp, r), f"worker_{k:03d}.
 def analysis_dir(camp, r):      return _p(camp, "analysis", f"round_{r:04d}")
 def summary_parquet(camp):      return _p(camp, "analysis", "summary.parquet")
 def round_json(camp, r):        return _p(camp, "rounds", f"round_{r:04d}.json")
-def null_cache_path(camp):      return _p(camp, "null_cache.h5")
+def null_cache_dir(camp):       return _p(camp, "null_cache")
 
 
 def ensure_campaign_dirs(camp):
-    for sub in ("policy", "checkpoints", "rollouts", "states", "analysis", "rounds", "logs"):
+    for sub in ("policy", "checkpoints", "rollouts", "states", "analysis",
+                "rounds", "logs", "null_cache"):
         os.makedirs(_p(camp, sub), exist_ok=True)
 
 
@@ -233,46 +234,49 @@ def read_summary(camp):
 
 
 # ----------------------------------------------------------------------- #
-# Null-density cache (file-locked; plan section 5.5)
+# Null-baseline cache (sharded one-file-per-key; plan section 5.5)
 # ----------------------------------------------------------------------- #
+# Each (N, P, seed, field) baseline lives in its own tiny text file under
+# ``null_cache/`` and is written atomically (tmp + os.replace). This avoids the
+# single shared HDF5 file whose concurrent in-place writes corrupt across nodes:
+# fcntl.flock only serializes processes on one kernel, so rollout array tasks
+# spread over multiple HPC nodes raced and produced "bad symbol table node
+# signature". Rollout workers hold disjoint seeds and eval/CEM run single-
+# process, so no two writers ever target the same key file; even if they did,
+# os.replace makes last-writer-wins safe. Readers stat individual files, so a
+# corrupt or half-written shard degrades to a single recompute, not a crash.
 def _null_key(N, P, seed, field="phi"):
     base = f"N{int(N)}_P{float(P):.6e}_s{int(seed)}"
     return base if field == "phi" else f"{base}__{field}"
+
+
+def _null_shard(camp, N, P, seed, field="phi"):
+    return _p(null_cache_dir(camp), _null_key(N, P, seed, field) + ".txt")
 
 
 def null_cache_get(camp, keys: list[tuple], field: str = "phi") -> dict:
     """Return {(N,P,seed): value} for cached entries among `keys`.
 
     `field` selects which baseline ("phi" = null density, "G" = null shear
-    modulus); non-phi fields use a suffixed key so caches coexist in one file.
+    modulus); non-phi fields use a suffixed filename so caches coexist on disk.
+    A missing or unreadable shard is simply omitted (treated as not cached).
     """
-    import h5py
-
-    path = null_cache_path(camp)
     out = {}
-    with file_lock(path):
-        if not os.path.exists(path):
-            return out
-        with h5py.File(path, "r") as f:
-            for (N, P, seed) in keys:
-                k = _null_key(N, P, seed, field)
-                if k in f:
-                    out[(N, P, seed)] = float(f[k][()])
+    for (N, P, seed) in keys:
+        try:
+            with open(_null_shard(camp, N, P, seed, field)) as f:
+                out[(N, P, seed)] = float(f.read())
+        except (FileNotFoundError, ValueError):
+            continue
     return out
 
 
 def null_cache_update(camp, mapping: dict, field: str = "phi"):
-    """Merge {(N,P,seed): value} into the cache (locked read-modify-write)."""
-    import h5py
-
-    path = null_cache_path(camp)
-    with file_lock(path):
-        with h5py.File(path, "a") as f:
-            for (N, P, seed), val in mapping.items():
-                k = _null_key(N, P, seed, field)
-                if k in f:
-                    del f[k]
-                f.create_dataset(k, data=float(val))
+    """Write {(N,P,seed): value} as atomic per-key shards (no shared file)."""
+    for (N, P, seed), val in mapping.items():
+        with atomic_path(_null_shard(camp, N, P, seed, field)) as tmp:
+            with open(tmp, "w") as f:
+                f.write(repr(float(val)))
 
 
 # ----------------------------------------------------------------------- #

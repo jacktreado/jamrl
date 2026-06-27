@@ -40,7 +40,8 @@ class Config:
     trunc_pen: float = 0.5
     quiesce_tol: float = 0.05
     quiesce_n: int = 3
-    finish_cap: int = 12000
+    finish_cap: int = 12000        # lower bound on finish-and-measure iterations
+    finish_cap_max: int = 60000    # hard ceiling; raise to reach jamming at very low P
     # tolerances
     ftol_abs: float = 1e-10
     ftol_rel_P: float = 1e-5
@@ -213,6 +214,7 @@ def env_config(cfg: Config):
     ec.quiesce_tol = cfg.quiesce_tol
     ec.quiesce_n = cfg.quiesce_n
     ec.finish_cap = cfg.finish_cap
+    ec.finish_cap_max = cfg.finish_cap_max
     ec.tol.ftol_abs = cfg.ftol_abs
     ec.tol.ftol_rel_P = cfg.ftol_rel_P
     ec.tol.ptol = cfg.ptol

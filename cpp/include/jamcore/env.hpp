@@ -45,7 +45,8 @@ struct EnvConfig {
   double trunc_pen = 0.5;
   double quiesce_tol = 0.05;
   int quiesce_n = 3;
-  int finish_cap = 12000;
+  int finish_cap = 12000;       // lower bound on finish-and-measure iterations
+  int finish_cap_max = 60000;   // hard ceiling (raise to reach jamming at very low P)
   // tolerances + minimizer
   Tols tol;
   LBFGSParams lbfgs;
@@ -81,8 +82,9 @@ struct Env {
   Transition step(double aP_raw, double aS_raw);
 };
 
-// Pressure-scaled finish-and-measure iteration budget (fix 4.4).
-int finish_budget(double P, int finish_cap);
+// Pressure-scaled finish-and-measure iteration budget (fix 4.4), capped at
+// finish_cap_max (raise to chase jamming at very low target pressure).
+int finish_budget(double P, int finish_cap, int finish_cap_max);
 
 // Null (zero-action) jammed density for the reward baseline (plan 5.5).
 double compute_null_phi(System proto, const EnvConfig& cfg);

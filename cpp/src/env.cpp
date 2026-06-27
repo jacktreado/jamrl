@@ -23,9 +23,9 @@ static double objective_reward(const EnvConfig& cfg, const System& sys, double p
   return cfg.w_phi * (phi_now - phi_null);  // REWARD_DENSITY (default)
 }
 
-int finish_budget(double P, int finish_cap) {
+int finish_budget(double P, int finish_cap, int finish_cap_max) {
   const int scaled = static_cast<int>(std::lround(3e2 / std::sqrt(P)));
-  return std::min(60000, std::max(finish_cap, scaled));
+  return std::min(finish_cap_max, std::max(finish_cap, scaled));
 }
 
 void Env::reset(const System& proto, double phi_null_value, double G_null_value) {
@@ -102,7 +102,7 @@ Transition Env::step(double aP_raw, double aS_raw) {
     oc = CONVERGED;
   } else if (t >= cfg.T_cap || quiet >= cfg.quiesce_n) {
     // finish-and-measure: release loads, relax up to the pressure-scaled budget
-    const int cap = finish_budget(P, cfg.finish_cap);
+    const int cap = finish_budget(P, cfg.finish_cap, cfg.finish_cap_max);
     lbfgs_relax(sys, 0.0, 0.0, cap, cfg.lbfgs, cfg.tol);
     gamma_wrap(sys);
     ev = evaluate(sys, 0.0, 0.0);
@@ -205,6 +205,7 @@ void register_env_impl(py::module_& m) {
       .def_readwrite("quiesce_tol", &EnvConfig::quiesce_tol)
       .def_readwrite("quiesce_n", &EnvConfig::quiesce_n)
       .def_readwrite("finish_cap", &EnvConfig::finish_cap)
+      .def_readwrite("finish_cap_max", &EnvConfig::finish_cap_max)
       .def_readwrite("tol", &EnvConfig::tol)
       .def_readwrite("lbfgs", &EnvConfig::lbfgs);
 

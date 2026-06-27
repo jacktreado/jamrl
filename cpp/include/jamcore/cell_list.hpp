@@ -34,8 +34,16 @@ inline void for_each_pair_cells(const System& sys, F&& f) {
   const int ny = std::max(1, static_cast<int>(std::ceil(frac + 1e-9)));
   const int nx = std::max(1, static_cast<int>(std::ceil((1.0 + std::abs(gamma)) * frac + 1e-9)));
 
-  // Need a non-overlapping stencil (else cells get visited twice -> double count).
-  if (m < 2 * nx + 1 || m < 2 * ny + 1) {
+  // Fall back to O(N^2) when:
+  //  - the box is too small to host a non-overlapping (2k+1) stencil (else
+  //    cells get visited twice -> double count), or
+  //  - the box is so dilute that the cell grid would explode. At very low
+  //    target pressure a near-unjammed/blown-up configuration can have L >>
+  //    sigma_max, making `m` enormous; `m*m` then overflows int and the `head`
+  //    allocation/indexing segfaults. Such states have ~no contacts, so the
+  //    quadratic path is both safe and cheap. (overflow-safe `long` compare.)
+  const long cells = static_cast<long>(m) * static_cast<long>(m);
+  if (m < 2 * nx + 1 || m < 2 * ny + 1 || cells > 64L * static_cast<long>(std::max(1, N))) {
     for (int i = 0; i < N; ++i)
       for (int j = i + 1; j < N; ++j) f(i, j);
     return;
