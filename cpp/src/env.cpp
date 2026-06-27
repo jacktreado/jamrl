@@ -1,9 +1,11 @@
 // jamcore: the jamming MDP environment + pybind registration.
 #include "jamcore/env.hpp"
+#include "jamcore/moduli.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/eigen.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 namespace jamcore {
@@ -12,14 +14,24 @@ static inline double clampd(double v, double lo, double hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Terminal objective reward for a jammed state, selected by reward_mode.
+// DENSITY: w_phi*(phi - phi_null);  SHEAR: w_G*(G - G_null) at fixed pressure.
+static double objective_reward(const EnvConfig& cfg, const System& sys, double phi_now,
+                               double phi_null, double G_null) {
+  if (cfg.reward_mode == REWARD_SHEAR)
+    return cfg.w_G * (shear_modulus(sys) - G_null);
+  return cfg.w_phi * (phi_now - phi_null);  // REWARD_DENSITY (default)
+}
+
 int finish_budget(double P, int finish_cap) {
   const int scaled = static_cast<int>(std::lround(3e2 / std::sqrt(P)));
   return std::min(60000, std::max(finish_cap, scaled));
 }
 
-void Env::reset(const System& proto, double phi_null_value) {
+void Env::reset(const System& proto, double phi_null_value, double G_null_value) {
   sys = proto;
   phi_null = phi_null_value;
+  G_null = G_null_value;
   t = 0;
   prev_aP = 0.0;
   prev_aS = 0.0;
@@ -85,7 +97,7 @@ Transition Env::step(double aP_raw, double aS_raw) {
     else if (ev.maxOv > 0.9) oc = OVERLAP;
     else oc = MELT;
   } else if (is_converged_unbiased(ev, sys, cfg.tol)) {
-    reward += cfg.w_phi * (phi_now - phi_null);
+    reward += objective_reward(cfg, sys, phi_now, phi_null, G_null);
     dn = true;
     oc = CONVERGED;
   } else if (t >= cfg.T_cap || quiet >= cfg.quiesce_n) {
@@ -97,7 +109,7 @@ Transition Env::step(double aP_raw, double aS_raw) {
     last_ev = ev;
     phi_now = sys.phi();
     if (is_converged_unbiased(ev, sys, cfg.tol)) {
-      reward += cfg.w_phi * (phi_now - phi_null) - cfg.trunc_pen;
+      reward += objective_reward(cfg, sys, phi_now, phi_null, G_null) - cfg.trunc_pen;
       oc = (quiet >= cfg.quiesce_n) ? QUIESCED : CAPPED;
     } else {
       reward -= cfg.fail_pen;
@@ -143,6 +155,22 @@ double compute_null_phi(System proto, const EnvConfig& cfg) {
   return env.sys.phi();
 }
 
+std::pair<double, double> compute_null_phi_G(System proto, EnvConfig cfg) {
+  // One zero-action episode -> both phi_null and the shear modulus of the
+  // null-protocol jammed state (the SHEAR-mode reward baseline). Force DENSITY
+  // mode on the local copy so the per-step reward path never pays for moduli;
+  // we measure G once, at the end.
+  cfg.reward_mode = REWARD_DENSITY;
+  Env env;
+  env.cfg = cfg;
+  env.reset(proto, 0.0);
+  int guard = 0;
+  while (!env.done && guard++ < cfg.T_cap + 4) {
+    env.step(0.0, 0.0);
+  }
+  return {env.sys.phi(), shear_modulus(env.sys)};
+}
+
 static py::dict transition_to_dict(const Transition& tr) {
   py::dict d;
   d["obs"] = VectorXd(tr.obs);
@@ -168,7 +196,9 @@ void register_env_impl(py::module_& m) {
       .def_readwrite("kappa_sigma", &EnvConfig::kappa_sigma)
       .def_readwrite("n_relax", &EnvConfig::n_relax)
       .def_readwrite("T_cap", &EnvConfig::T_cap)
+      .def_readwrite("reward_mode", &EnvConfig::reward_mode)
       .def_readwrite("w_phi", &EnvConfig::w_phi)
+      .def_readwrite("w_G", &EnvConfig::w_G)
       .def_readwrite("c_step", &EnvConfig::c_step)
       .def_readwrite("fail_pen", &EnvConfig::fail_pen)
       .def_readwrite("trunc_pen", &EnvConfig::trunc_pen)
@@ -186,15 +216,16 @@ void register_env_impl(py::module_& m) {
       .def_readonly("outcome", &Env::outcome)
       .def_readonly("total_reward", &Env::total_reward)
       .def_readonly("phi_null", &Env::phi_null)
+      .def_readonly("G_null", &Env::G_null)
       .def_property_readonly("sys", [](Env& e) { return &e.sys; },
                              py::return_value_policy::reference_internal)
       .def_property_readonly("phi", [](const Env& e) { return e.sys.phi(); })
       .def("reset",
-           [](Env& e, const System& proto, double phi_null) {
-             e.reset(proto, phi_null);
+           [](Env& e, const System& proto, double phi_null, double G_null) {
+             e.reset(proto, phi_null, G_null);
              return VectorXd(e.observe());
            },
-           py::arg("proto"), py::arg("phi_null") = 0.0,
+           py::arg("proto"), py::arg("phi_null") = 0.0, py::arg("G_null") = 0.0,
            "Reset to `proto`; returns the initial observation.")
       .def("step",
            [](Env& e, double aP, double aS) { return transition_to_dict(e.step(aP, aS)); },
@@ -204,6 +235,9 @@ void register_env_impl(py::module_& m) {
 
   m.def("compute_null_phi", &compute_null_phi, py::arg("proto"), py::arg("cfg") = EnvConfig{},
         "Density reached by a zero-action episode on `proto` (reward baseline).");
+  m.def("compute_null_phi_G", &compute_null_phi_G, py::arg("proto"), py::arg("cfg") = EnvConfig{},
+        "Density and shear modulus of a zero-action episode on `proto` "
+        "(returns (phi_null, G_null); SHEAR-mode reward baseline).");
 
   // Outcome-code constants for Python-side decoding.
   py::dict oc;

@@ -96,3 +96,19 @@ Assembled in `hessian.cpp` / `moduli.cpp`; see `tests/test_hessian.py` and
 `tests/test_moduli.py` for the enforced contract (`H·v` vs central FD to 1e-9,
 symmetry to 1e-12, `B>0`, `G ≥ -1e-8` shear-stabilized, Schur-complement moduli
 cross-checked by affine finite difference).
+
+## Reward modes (objective selection)
+
+The terminal reward (assigned once, at the jammed state) is one of:
+
+- **`density`** (default): `w_phi·(φ − φ_null)` — reward denser-than-null packings.
+- **`shear_modulus`**: `w_G·(G − G_null)` — reward stiffer-in-shear-than-null
+  packings. `G` is the Schur-complement shear modulus (elimination of all DOF
+  except the γ strain), measured at the jammed state which sits at the fixed
+  target pressure `P`; `G_null` is the same modulus for the zero-action null
+  protocol. Because both agent and baseline are evaluated at the same `P`, this
+  is "increase shear stiffness at fixed pressure."
+
+Selected in C++ (`env.cpp::objective_reward`) so all termination/penalty logic is
+shared. The null baselines (`φ_null`, and `G_null` for shear mode) come from
+`compute_null_phi` / `compute_null_phi_G` and are cached per `(N, P, seed)`.

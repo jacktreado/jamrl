@@ -108,7 +108,7 @@ def _build_summary(camp: str) -> dict:
     if df.empty:
         return {}
     cols = [
-        "round", "episodes", "mean_reward", "eval_dphi", "eval_success",
+        "round", "episodes", "mean_reward", "eval_dphi", "eval_dG", "eval_success",
         "mean_absaP", "mean_absaS", "mean_absgamma",
         "Bbar", "Gbar", "dzbar", "rattler_frac", "shear_stable_frac",
         "omega_star", "sigma_policy", "wall_seconds",
@@ -483,6 +483,7 @@ def build_campaign_analysis(
             f.attrs["P"]              = float(cfg.P)       if cfg else float("nan")
             f.attrs["hidden"]         = list(cfg.hidden)   if cfg else []
             f.attrs["rounds_total"]   = int(cfg.rounds)    if cfg else len(all_rounds)
+            f.attrs["reward_mode"]    = cfg.reward_mode    if cfg else "density"
             f.attrs["spectra_stride"] = spectra_stride
             f.attrs["traj_stride"]    = traj_stride
 

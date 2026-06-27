@@ -30,6 +30,35 @@ def ensure_null_cache(cfg, camp, seeds) -> list[float]:
     return [cached[k] for k in keys]
 
 
+def ensure_null_baselines(cfg, camp, seeds):
+    """Return (phi_null, G_null|None) aligned with `seeds`, caching any missing.
+
+    Density mode needs only phi_null (cheap; no Hessian). Shear mode also needs
+    G_null (the null protocol's shear modulus at the same P); both are computed
+    from a single null run via `_core.compute_null_phi_G` and cached separately.
+    """
+    if cfg.reward_mode != "shear_modulus":
+        return ensure_null_cache(cfg, camp, seeds), None
+
+    keys = [(cfg.N, cfg.P, int(s)) for s in seeds]
+    cphi = storage.null_cache_get(camp, keys, field="phi")
+    cG = storage.null_cache_get(camp, keys, field="G")
+    missing = [k for k in keys if k not in cphi or k not in cG]
+    if missing:
+        ec = config.env_config(cfg)
+        newphi, newG = {}, {}
+        for (N, P, s) in missing:
+            proto = _core.make_system(N, int(s), cfg.phi0, P)
+            phi, G = _core.compute_null_phi_G(proto, ec)
+            newphi[(N, P, s)] = float(phi)
+            newG[(N, P, s)] = float(G)
+        storage.null_cache_update(camp, newphi, field="phi")
+        storage.null_cache_update(camp, newG, field="G")
+        cphi.update(newphi)
+        cG.update(newG)
+    return [cphi[k] for k in keys], [cG[k] for k in keys]
+
+
 def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
     """Execute one rollout array task; returns the episode dicts."""
     _core.set_num_threads(cfg.threads_per_task)
@@ -38,15 +67,16 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
     pol = policy.build_core_policy(pol_npz)
 
     seeds = seeding.worker_seeds(cfg.seed, r, k, cfg.episodes_per_worker)
-    phin = ensure_null_cache(cfg, camp, seeds)
+    phin, gnull = ensure_null_baselines(cfg, camp, seeds)
 
     proto = _core.make_system(cfg.N, int(seeds[0]) if seeds else 1, cfg.phi0, cfg.P)
     ec = config.env_config(cfg)
     sf = config.save_flags(cfg)
     pm = config.parallel_mode_code(cfg)
 
+    gn = [float(x) for x in gnull] if gnull is not None else []
     episodes = _core.run_episodes_batch(
-        proto, pol, [int(s) for s in seeds], ec, sf, pm, [float(x) for x in phin]
+        proto, pol, [int(s) for s in seeds], ec, sf, pm, [float(x) for x in phin], gn
     )
 
     # Heavy outputs go to node-local scratch (if configured) and are copied to

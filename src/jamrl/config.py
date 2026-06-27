@@ -32,7 +32,9 @@ class Config:
     n_relax: int = 20
     T_cap: int = 60
     # reward
-    w_phi: float = 400.0
+    reward_mode: str = "density"  # density | shear_modulus
+    w_phi: float = 400.0          # density-mode weight: w_phi*(phi - phi_null)
+    w_G: float = 200.0            # shear-mode weight: w_G*(G - G_null); tune so reward ~ O(1)
     c_step: float = 0.01
     fail_pen: float = 2.0
     trunc_pen: float = 0.5
@@ -184,11 +186,17 @@ def from_args(args: argparse.Namespace) -> Config:
 # Bridges into the C++ core's EnvConfig / SaveFlags.
 # ----------------------------------------------------------------------- #
 _SAVE_HESSIAN_CODE = {"none": 0, "spectrum": 1, "sparse": 2, "dense": 3}
+_REWARD_MODE_CODE = {"density": 0, "shear_modulus": 1}
 
 
 def env_config(cfg: Config):
     """Build a _core.EnvConfig from a Config."""
     from jamrl import _core
+
+    if cfg.reward_mode not in _REWARD_MODE_CODE:
+        raise ValueError(
+            f"unknown reward_mode {cfg.reward_mode!r}; choose from {sorted(_REWARD_MODE_CODE)}"
+        )
 
     ec = _core.EnvConfig()
     ec.phi0 = cfg.phi0
@@ -196,7 +204,9 @@ def env_config(cfg: Config):
     ec.kappa_sigma = cfg.kappa_sigma
     ec.n_relax = cfg.n_relax
     ec.T_cap = cfg.T_cap
+    ec.reward_mode = _REWARD_MODE_CODE[cfg.reward_mode]
     ec.w_phi = cfg.w_phi
+    ec.w_G = cfg.w_G
     ec.c_step = cfg.c_step
     ec.fail_pen = cfg.fail_pen
     ec.trunc_pen = cfg.trunc_pen

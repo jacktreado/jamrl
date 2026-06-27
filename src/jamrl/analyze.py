@@ -23,12 +23,16 @@ def print_status(camp: str) -> None:
         print(f"  algo={cfg.algo}  N={cfg.N}  P={cfg.P}  rounds_target={cfg.rounds}")
     print(f"  rounds_completed={len(df)}  DONE={done}  STOP={stop}")
 
+    # The objective column tracked depends on the reward mode.
+    mode = getattr(cfg, "reward_mode", "density") if cfg is not None else "density"
+    obj_col, obj_lbl = ("eval_dG", "eval_dG") if mode == "shear_modulus" else ("eval_dphi", "eval_dphi")
+
     if len(df):
         tail = df.tail(8)
-        print("  recent rounds (round | mean_reward | eval_dphi | success | sigma):")
+        print(f"  recent rounds (round | mean_reward | {obj_lbl} | success | sigma):")
         for _, row in tail.iterrows():
             print(f"    {int(row['round']):5d} | {row['mean_reward']:+9.3f} | "
-                  f"{row['eval_dphi']:+9.4f} | {row['eval_success']:.2f} | "
+                  f"{row.get(obj_col, float('nan')):+9.4f} | {row['eval_success']:.2f} | "
                   f"{row.get('sigma_policy', float('nan')):.3f}")
         last = df.iloc[-1]
         print("  last eval:")
@@ -53,6 +57,7 @@ def plot_campaign(camp: str) -> list[str]:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
+    cfg = _load_cfg(camp)
     df = storage.read_summary(camp)
     outdir = os.path.join(camp, "analysis", "plots")
     os.makedirs(outdir, exist_ok=True)
@@ -60,10 +65,14 @@ def plot_campaign(camp: str) -> list[str]:
         print("[plot] no summary data yet")
         return []
 
+    # Primary objective panel tracks the active reward mode.
+    mode = getattr(cfg, "reward_mode", "density") if cfg is not None else "density"
+    obj = ("eval_dG", "eval ⟨G − G_null⟩") if mode == "shear_modulus" else ("eval_dphi", "eval ⟨φ − φ_null⟩")
+
     x = df["round"].to_numpy()
     panels = [
         ("mean_reward", "training mean reward"),
-        ("eval_dphi", "eval ⟨φ − φ_null⟩"),
+        obj,
         ("eval_success", "eval success rate"),
         ("Gbar", "mean shear modulus G"),
         ("dzbar", "mean Δz"),

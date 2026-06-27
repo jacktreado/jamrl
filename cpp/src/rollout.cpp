@@ -91,20 +91,30 @@ static void fill_final_state(System& s, const SaveFlags& save, bool want_hessian
 
 static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64_t seed,
                                   const EnvConfig& cfg, const SaveFlags& save,
-                                  double phi_null_in, bool want_hessian, bool want_spectrum,
-                                  bool want_moduli) {
+                                  double phi_null_in, double g_null_in, bool want_hessian,
+                                  bool want_spectrum, bool want_moduli) {
   EpisodeOut out;
   out.seed = seed;
   out.z_iso = proto.z_iso;
 
   System sys = make_system(proto.N, seed, cfg.phi0, proto.P);
-  const double phi_null =
-      (std::isnan(phi_null_in) || phi_null_in <= 0.0) ? compute_null_phi(sys, cfg) : phi_null_in;
+  double phi_null = phi_null_in;
+  double g_null = g_null_in;
+  const bool need_phi = std::isnan(phi_null) || phi_null <= 0.0;
+  const bool need_G = cfg.reward_mode == REWARD_SHEAR && (std::isnan(g_null) || g_null == 0.0);
+  if (need_phi && need_G) {
+    auto pg = compute_null_phi_G(sys, cfg);  // one null run for both baselines
+    phi_null = pg.first;
+    g_null = pg.second;
+  } else {
+    if (need_phi) phi_null = compute_null_phi(sys, cfg);
+    if (need_G) g_null = compute_null_phi_G(sys, cfg).second;
+  }
   out.phi_null = phi_null;
 
   Env env;
   env.cfg = cfg;
-  env.reset(sys, phi_null);
+  env.reset(sys, phi_null, g_null);
   VectorXd obs = env.observe();
 
   Rng arng(action_subseed(seed));
@@ -144,7 +154,8 @@ std::vector<EpisodeOut>
 run_episodes_batch(const System& proto, const Policy& pol,
                    const std::vector<uint64_t>& seeds, const EnvConfig& cfg,
                    const SaveFlags& save, int parallel_mode,
-                   const std::vector<double>& phi_null) {
+                   const std::vector<double>& phi_null,
+                   const std::vector<double>& g_null) {
   const int E = static_cast<int>(seeds.size());
   std::vector<EpisodeOut> out(E);
 
@@ -154,6 +165,8 @@ run_episodes_batch(const System& proto, const Policy& pol,
     bool ws = (save.save_hessian == SAVE_SPECTRUM);
     return std::make_pair(wh, ws);
   };
+  auto pn_of = [&](int i) { return (i < static_cast<int>(phi_null.size())) ? phi_null[i] : NAN; };
+  auto gn_of = [&](int i) { return (i < static_cast<int>(g_null.size())) ? g_null[i] : NAN; };
 
   const int prev_eigen = Eigen::nbThreads();
   if (parallel_mode == 0) {
@@ -162,17 +175,15 @@ run_episodes_batch(const System& proto, const Policy& pol,
 #pragma omp parallel for schedule(dynamic)
 #endif
     for (int i = 0; i < E; ++i) {
-      const double pn = (i < static_cast<int>(phi_null.size())) ? phi_null[i] : NAN;
       auto w = want(i);
-      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn, w.first, w.second,
-                               save.save_moduli);
+      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), w.first,
+                               w.second, save.save_moduli);
     }
   } else {
     for (int i = 0; i < E; ++i) {
-      const double pn = (i < static_cast<int>(phi_null.size())) ? phi_null[i] : NAN;
       auto w = want(i);
-      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn, w.first, w.second,
-                               save.save_moduli);
+      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), w.first,
+                               w.second, save.save_moduli);
     }
   }
   Eigen::setNbThreads(prev_eigen);
@@ -267,11 +278,11 @@ void register_rollout_impl(py::module_& m) {
       "run_episodes_batch",
       [](const System& proto, const Policy& pol, const std::vector<uint64_t>& seeds,
          const EnvConfig& cfg, const SaveFlags& save, int parallel_mode,
-         const std::vector<double>& phi_null) {
+         const std::vector<double>& phi_null, const std::vector<double>& g_null) {
         std::vector<EpisodeOut> res;
         {
           py::gil_scoped_release rel;
-          res = run_episodes_batch(proto, pol, seeds, cfg, save, parallel_mode, phi_null);
+          res = run_episodes_batch(proto, pol, seeds, cfg, save, parallel_mode, phi_null, g_null);
         }
         py::list out;
         for (const auto& e : res) out.append(episode_to_dict(e));
@@ -279,7 +290,7 @@ void register_rollout_impl(py::module_& m) {
       },
       py::arg("proto"), py::arg("policy"), py::arg("seeds"), py::arg("cfg") = EnvConfig{},
       py::arg("save") = SaveFlags{}, py::arg("parallel_mode") = 0,
-      py::arg("phi_null") = std::vector<double>{},
+      py::arg("phi_null") = std::vector<double>{}, py::arg("g_null") = std::vector<double>{},
       "Run E episodes under the policy; returns a list of per-episode result dicts.");
 }
 

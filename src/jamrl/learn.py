@@ -166,15 +166,23 @@ def greedy_eval(cfg, camp, r) -> dict:
     d["log_std"] = np.full_like(np.asarray(d["log_std"], float), -100.0)  # deterministic
     core_pol = policy.build_core_policy(d)
     seeds = [int(s) for s in cfg.eval_seeds]
-    phin = rollout.ensure_null_cache(cfg, camp, seeds)
+    phin, gnull = rollout.ensure_null_baselines(cfg, camp, seeds)
     proto = _core.make_system(cfg.N, seeds[0], cfg.phi0, cfg.P)
     ec = config.env_config(cfg)
     sf = _core.SaveFlags(); sf.save_hessian = 0; sf.save_moduli = True; sf.save_contacts = False
+    gn = [float(x) for x in gnull] if gnull is not None else []
     eps = _core.run_episodes_batch(proto, core_pol, seeds, ec, sf,
-                                   config.parallel_mode_code(cfg), [float(x) for x in phin])
+                                   config.parallel_mode_code(cfg), [float(x) for x in phin], gn)
 
     jam = [e for e in eps if e["jammed"]]
     dphi = [e["phi"] - e["phi_null"] for e in eps]
+    # eval_dG = improvement in shear modulus over the null protocol (shear mode);
+    # episodes align with `seeds`, so gnull[i] is the baseline for eps[i].
+    if gnull is not None:
+        dG = [eps[i]["G"] - gnull[i] for i in range(len(eps))
+              if eps[i]["jammed"] and "G" in eps[i]]
+    else:
+        dG = []
     aP = [float(np.abs(np.clip(np.asarray(e["act"])[:, 0], -1, 1)).mean()) for e in eps if e["T"] > 0]
     aS = [float(np.abs(np.clip(np.asarray(e["act"])[:, 1], -1, 1)).mean()) for e in eps if e["T"] > 0]
 
@@ -183,6 +191,7 @@ def greedy_eval(cfg, camp, r) -> dict:
 
     return {
         "eval_dphi": mean(dphi),
+        "eval_dG": mean(dG),
         "eval_success": len(jam) / len(eps) if eps else 0.0,
         "mean_absaP": mean(aP),
         "mean_absaS": mean(aS),

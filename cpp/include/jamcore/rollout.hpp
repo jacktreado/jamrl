@@ -54,12 +54,14 @@ uint64_t action_subseed(uint64_t seed);
 
 // Run E episodes (one per seed). proto supplies N and P; cfg.phi0 the density.
 // phi_null aligned with seeds (empty -> computed per seed internally).
+// g_null aligned with seeds for SHEAR-mode baseline (empty -> computed per seed).
 // parallel_mode: 0 = OpenMP over episodes (each single-threaded, deterministic),
 //                1 = serial episodes with intra-episode Eigen threading.
 std::vector<EpisodeOut>
 run_episodes_batch(const System& proto, const Policy& pol,
                    const std::vector<uint64_t>& seeds, const EnvConfig& cfg,
                    const SaveFlags& save, int parallel_mode,
-                   const std::vector<double>& phi_null);
+                   const std::vector<double>& phi_null,
+                   const std::vector<double>& g_null = {});
 
 }  // namespace jamcore

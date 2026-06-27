@@ -41,13 +41,13 @@ def test_rendered_scripts_content(tmp_path):
 
     assert "--array=0-3" in roll  # workers=4 -> 0..3
     assert "--cpus-per-task=8" in roll
-    assert "srun jamrl rollout" in roll
+    assert "srun --cpu-bind=none jamrl rollout" in roll  # cpu-bind disabled (fragmented allocs)
     assert "OPENBLAS_NUM_THREADS=1" in roll  # episode mode
 
-    assert "srun jamrl learn" in learn
+    assert "srun --cpu-bind=none jamrl learn" in learn
     assert "--cpus-per-task=4" in learn
 
-    assert "srun jamrl postprocess" in post
+    assert "srun --cpu-bind=none jamrl postprocess" in post
     assert "--array=0-" in post
 
 

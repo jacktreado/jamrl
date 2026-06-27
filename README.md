@@ -47,6 +47,38 @@ On macOS the build links the **Python environment's** libomp so a single
 OpenMP runtime lives in-process (linking a second one — e.g. Homebrew's —
 triggers "OMP Error #15" once numpy/numba are imported).
 
+### Reward modes
+
+The objective the agent optimizes is selected by `--reward-mode` (default
+`density`). Both modes measure the **final jammed state**, which sits at the
+campaign's fixed target pressure `P`, and reward improvement over the zero-action
+**null protocol** at the same `P`:
+
+| mode | terminal reward | baseline | weight (default) |
+|---|---|---|---|
+| `density` | `w_phi·(φ − φ_null)` — denser-than-null packings | `φ_null` | `--w-phi` (400) |
+| `shear_modulus` | `w_G·(G − G_null)` — stiffer-in-shear-than-null packings | `G_null` | `--w-G` (200) |
+
+The per-step cost and failure/truncation penalties are identical across modes;
+only the terminal objective term changes. `G_null` (the null protocol's shear
+modulus) is computed once per `(N, P, seed)` and cached alongside `φ_null`.
+
+```bash
+# train for shear stiffness instead of density
+jamrl submit --N 256 --rounds 500 --reward-mode shear_modulus --w-G 200 \
+             --partition cpu --name shear1
+```
+
+**Tuning `w_G`:** run a handful of rounds and check the training reward is
+`O(1)` (comparable to the density mode's ~±1); if the terminal reward is much
+smaller/larger, scale `--w-G` accordingly. `jamrl status`/`plot` and the
+analysis notebooks automatically track `eval_dG = ⟨G − G_null⟩` in shear mode
+(and `eval_dphi` in density mode).
+
+> The reward is computed in the C++ core, so `_core` must be rebuilt after
+> pulling reward-mode changes (`pip install -e .` or `scripts/build.sh`),
+> including on the cluster.
+
 ### Learner backend
 
 The PPO learner has two interchangeable backends, selected by

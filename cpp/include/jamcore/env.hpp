@@ -1,5 +1,7 @@
 // jamcore/env.hpp — the box-control jamming MDP (plan section 3.5).
 #pragma once
+#include <utility>
+
 #include "jamcore/system.hpp"
 #include "jamcore/evaluate.hpp"
 #include "jamcore/lbfgs.hpp"
@@ -21,6 +23,11 @@ enum Outcome {
 constexpr int OBS_DIM = 10;
 constexpr int ACT_DIM = 2;
 
+// Reward objective selector (plan: multiple reward modes). DENSITY is the
+// original denser-than-null objective; SHEAR rewards stiffer-than-null packings
+// at the same fixed target pressure.
+enum RewardMode { REWARD_DENSITY = 0, REWARD_SHEAR = 1 };
+
 struct EnvConfig {
   // system (for per-episode config generation in the batch runner)
   double phi0 = 0.80;
@@ -30,7 +37,9 @@ struct EnvConfig {
   int n_relax = 20;
   int T_cap = 60;
   // reward
+  int reward_mode = REWARD_DENSITY;  // density | shear_modulus
   double w_phi = 400.0;
+  double w_G = 200.0;                 // shear-modulus reward weight (SHEAR mode)
   double c_step = 0.01;
   double fail_pen = 2.0;
   double trunc_pen = 0.5;
@@ -57,6 +66,7 @@ struct Env {
   System sys;
   EnvConfig cfg;
   double phi_null = 0.0;
+  double G_null = 0.0;  // null-protocol shear modulus baseline (SHEAR mode)
   // episode state
   int t = 0;
   double prev_aP = 0.0, prev_aS = 0.0;
@@ -66,7 +76,7 @@ struct Env {
   double total_reward = 0.0;
   EvalResult last_ev;  // last unbiased evaluation
 
-  void reset(const System& proto, double phi_null_value);
+  void reset(const System& proto, double phi_null_value, double G_null_value = 0.0);
   VectorXd observe() const;
   Transition step(double aP_raw, double aS_raw);
 };
@@ -76,5 +86,9 @@ int finish_budget(double P, int finish_cap);
 
 // Null (zero-action) jammed density for the reward baseline (plan 5.5).
 double compute_null_phi(System proto, const EnvConfig& cfg);
+
+// Null (zero-action) jammed density AND shear modulus, from one null run
+// (SHEAR-mode reward baseline). Returns {phi_null, G_null}.
+std::pair<double, double> compute_null_phi_G(System proto, EnvConfig cfg);
 
 }  // namespace jamcore

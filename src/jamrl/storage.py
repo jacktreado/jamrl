@@ -199,7 +199,7 @@ def iter_states_h5(path):
 # Summary parquet (append-only; plan section 7.2)
 # ----------------------------------------------------------------------- #
 SUMMARY_COLUMNS = [
-    "round", "episodes", "mean_reward", "eval_dphi", "eval_success",
+    "round", "episodes", "mean_reward", "eval_dphi", "eval_dG", "eval_success",
     "eval_cost_kevals", "mean_absaP", "mean_absaS", "mean_absgamma",
     "Bbar", "Gbar", "dzbar", "rattler_frac", "shear_stable_frac",
     "omega_star", "sigma_policy", "wall_seconds", "git_hash",
@@ -235,12 +235,17 @@ def read_summary(camp):
 # ----------------------------------------------------------------------- #
 # Null-density cache (file-locked; plan section 5.5)
 # ----------------------------------------------------------------------- #
-def _null_key(N, P, seed):
-    return f"N{int(N)}_P{float(P):.6e}_s{int(seed)}"
+def _null_key(N, P, seed, field="phi"):
+    base = f"N{int(N)}_P{float(P):.6e}_s{int(seed)}"
+    return base if field == "phi" else f"{base}__{field}"
 
 
-def null_cache_get(camp, keys: list[tuple]) -> dict:
-    """Return {(N,P,seed): phi_null} for cached entries among `keys`."""
+def null_cache_get(camp, keys: list[tuple], field: str = "phi") -> dict:
+    """Return {(N,P,seed): value} for cached entries among `keys`.
+
+    `field` selects which baseline ("phi" = null density, "G" = null shear
+    modulus); non-phi fields use a suffixed key so caches coexist in one file.
+    """
     import h5py
 
     path = null_cache_path(camp)
@@ -250,21 +255,21 @@ def null_cache_get(camp, keys: list[tuple]) -> dict:
             return out
         with h5py.File(path, "r") as f:
             for (N, P, seed) in keys:
-                k = _null_key(N, P, seed)
+                k = _null_key(N, P, seed, field)
                 if k in f:
                     out[(N, P, seed)] = float(f[k][()])
     return out
 
 
-def null_cache_update(camp, mapping: dict):
-    """Merge {(N,P,seed): phi_null} into the cache (locked read-modify-write)."""
+def null_cache_update(camp, mapping: dict, field: str = "phi"):
+    """Merge {(N,P,seed): value} into the cache (locked read-modify-write)."""
     import h5py
 
     path = null_cache_path(camp)
     with file_lock(path):
         with h5py.File(path, "a") as f:
             for (N, P, seed), val in mapping.items():
-                k = _null_key(N, P, seed)
+                k = _null_key(N, P, seed, field)
                 if k in f:
                     del f[k]
                 f.create_dataset(k, data=float(val))
