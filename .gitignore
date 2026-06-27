@@ -21,3 +21,6 @@ campaigns/
 
 # Local env
 .venv/
+
+# Jupyter notebooks
+*.ipynb
