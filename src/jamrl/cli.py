@@ -49,8 +49,11 @@ def cmd_run_local(args):
             # provides the aggregate bookkeeping the learner expects.
             rollout.run_rollout(cfg, camp, r, 0)
         stats = learn.learn_round(cfg, camp, r)
+        # Show the objective tracked for this reward mode (dphi | dG | speed).
+        obj_key = {"shear_modulus": "eval_dG", "speed": "eval_speed"}.get(
+            cfg.reward_mode, "eval_dphi")
         print(f"  round {r:4d}: mean_reward={stats.get('mean_reward', float('nan')):+.3f} "
-              f"eval_dphi={stats.get('eval_dphi', float('nan')):+.4f} "
+              f"{obj_key}={stats.get(obj_key, float('nan')):+.4f} "
               f"success={stats.get('eval_success', float('nan')):.2f} "
               f"sigma={stats.get('sigma_policy', float('nan')):.3f}")
     else:

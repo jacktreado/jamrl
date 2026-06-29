@@ -3,6 +3,8 @@
 #include "jamcore/cell_list.hpp"
 #include "jamcore/evaluate.hpp"  // EVAL_CELLS_MIN_N
 
+#include <algorithm>
+#include <utility>
 #include <vector>
 #include <cmath>
 #include <Eigen/Dense>
@@ -171,9 +173,9 @@ static Eigen::VectorXd dense_eigvals(const SpMat& H) {
   return es.eigenvalues();  // ascending
 }
 
-Eigen::VectorXd eigvals_dos(const System& sys, int k) {
-  Backbone bb = backbone_set(sys);
-  SpMat H = assemble_hessian_dos(sys, bb);
+// Eigenvalues (ascending) of a symmetric sparse H. k<=0 (or k>=n-1) -> dense all;
+// k>0 -> Spectra lowest-k via shift-invert near 0, with a dense fallback.
+static Eigen::VectorXd eigvals_of(const SpMat& H, int k) {
   const int n = static_cast<int>(H.rows());
   if (n == 0) return Eigen::VectorXd();
   if (k <= 0 || k >= n - 1) return dense_eigvals(H);
@@ -196,6 +198,67 @@ Eigen::VectorXd eigvals_dos(const System& sys, int k) {
   // fallback: dense, smallest k
   Eigen::VectorXd all = dense_eigvals(H);
   return all.head(std::min(k, static_cast<int>(all.size())));
+}
+
+// Eigenpairs of a symmetric sparse H, eigenvalues ascending, eigenvectors as
+// columns. k<=0 (or k>=n-1) -> dense all; k>0 -> Spectra lowest-k near 0.
+static std::pair<Eigen::VectorXd, Eigen::MatrixXd> eigvecs_of(const SpMat& H, int k) {
+  const int n = static_cast<int>(H.rows());
+  if (n == 0) return {Eigen::VectorXd(), Eigen::MatrixXd()};
+
+  auto dense = [&]() {
+    Eigen::MatrixXd D = Eigen::MatrixXd(H);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> es(D);  // values + vectors, ascending
+    Eigen::VectorXd vals = es.eigenvalues();
+    Eigen::MatrixXd vecs = es.eigenvectors();
+    if (k > 0 && k < n) return std::make_pair(Eigen::VectorXd(vals.head(k)),
+                                              Eigen::MatrixXd(vecs.leftCols(k)));
+    return std::make_pair(vals, vecs);
+  };
+  if (k <= 0 || k >= n - 1) return dense();
+
+#ifdef JAMRL_USE_SPECTRA
+  try {
+    const int ncv = std::min(n, std::max(2 * k + 1, 20));
+    Spectra::SparseSymShiftSolve<double> op(H);
+    Spectra::SymEigsShiftSolver<Spectra::SparseSymShiftSolve<double>> eigs(op, k, ncv, -1e-6);
+    eigs.init();
+    eigs.compute(Spectra::SortRule::LargestMagn);
+    if (eigs.info() == Spectra::CompInfo::Successful) {
+      Eigen::VectorXd ev = eigs.eigenvalues();
+      Eigen::MatrixXd V = eigs.eigenvectors();
+      // sort ascending, carrying eigenvectors along
+      std::vector<int> idx(ev.size());
+      for (int i = 0; i < ev.size(); ++i) idx[i] = i;
+      std::sort(idx.begin(), idx.end(), [&](int a, int b) { return ev[a] < ev[b]; });
+      Eigen::VectorXd evs(ev.size());
+      Eigen::MatrixXd Vs(V.rows(), V.cols());
+      for (int j = 0; j < static_cast<int>(idx.size()); ++j) {
+        evs[j] = ev[idx[j]];
+        Vs.col(j) = V.col(idx[j]);
+      }
+      return {evs, Vs};
+    }
+  } catch (...) {
+  }
+#endif
+  return dense();
+}
+
+Eigen::VectorXd eigvals_dos(const System& sys, int k) {
+  Backbone bb = backbone_set(sys);
+  SpMat H = assemble_hessian_dos(sys, bb);
+  return eigvals_of(H, k);
+}
+
+Eigen::VectorXd eigvals_full_spectrum(const System& sys, int k) {
+  SpMat H = assemble_hessian_full(sys, sys.N >= EVAL_CELLS_MIN_N);
+  return eigvals_of(H, k);
+}
+
+std::pair<Eigen::VectorXd, Eigen::MatrixXd> eigvecs_full(const System& sys, int k) {
+  SpMat H = assemble_hessian_full(sys, sys.N >= EVAL_CELLS_MIN_N);
+  return eigvecs_of(H, k);
 }
 
 // ---- pybind glue ----
@@ -248,6 +311,25 @@ void register_hessian_impl(py::module_& m) {
         },
         py::arg("sys"), py::arg("k") = py::none(),
         "Backbone DOS eigenvalues (ascending); k=None -> dense all, k>0 -> lowest-k.");
+
+  m.def("eigvals_full",
+        [](const System& sys, py::object k) {
+          int kk = k.is_none() ? -1 : k.cast<int>();
+          return Eigen::VectorXd(eigvals_full_spectrum(sys, kk));
+        },
+        py::arg("sys"), py::arg("k") = py::none(),
+        "Full enthalpy Hessian (2N+2, box DOF included) eigenvalues (ascending); "
+        "k=None -> dense all, k>0 -> lowest-k. The box-inclusive relaxation spectrum.");
+
+  m.def("eigvecs_full",
+        [](const System& sys, py::object k) {
+          int kk = k.is_none() ? -1 : k.cast<int>();
+          auto vw = eigvecs_full(sys, kk);
+          return py::make_tuple(Eigen::VectorXd(vw.first), Eigen::MatrixXd(vw.second));
+        },
+        py::arg("sys"), py::arg("k") = py::none(),
+        "Full enthalpy Hessian eigenpairs (relaxation modes): returns "
+        "(eigenvalues[m], eigenvectors[2N+2, m]); k=None -> all 2N+2, k>0 -> lowest-k.");
 
   m.def("n_rattlers",
         [](const System& sys) { return sys.N - backbone_set(sys).n_keep; }, py::arg("sys"));

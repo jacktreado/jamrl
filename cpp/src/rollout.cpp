@@ -91,8 +91,8 @@ static void fill_final_state(System& s, const SaveFlags& save, bool want_hessian
 
 static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64_t seed,
                                   const EnvConfig& cfg, const SaveFlags& save,
-                                  double phi_null_in, double g_null_in, bool want_hessian,
-                                  bool want_spectrum, bool want_moduli) {
+                                  double phi_null_in, double g_null_in, double cost_null_in,
+                                  bool want_hessian, bool want_spectrum, bool want_moduli) {
   EpisodeOut out;
   out.seed = seed;
   out.z_iso = proto.z_iso;
@@ -100,21 +100,22 @@ static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64
   System sys = make_system(proto.N, seed, cfg.phi0, proto.P);
   double phi_null = phi_null_in;
   double g_null = g_null_in;
+  double cost_null = cost_null_in;
   const bool need_phi = std::isnan(phi_null) || phi_null <= 0.0;
   const bool need_G = cfg.reward_mode == REWARD_SHEAR && (std::isnan(g_null) || g_null == 0.0);
-  if (need_phi && need_G) {
-    auto pg = compute_null_phi_G(sys, cfg);  // one null run for both baselines
-    phi_null = pg.first;
-    g_null = pg.second;
-  } else {
-    if (need_phi) phi_null = compute_null_phi(sys, cfg);
-    if (need_G) g_null = compute_null_phi_G(sys, cfg).second;
+  const bool need_cost = cfg.reward_mode == REWARD_SPEED && (std::isnan(cost_null) || cost_null <= 0.0);
+  if (need_phi || need_G || need_cost) {
+    NullBaselines nb = compute_null_baselines(sys, cfg);  // one null run for all baselines
+    if (need_phi) phi_null = nb.phi;
+    if (need_G) g_null = nb.G;
+    if (need_cost) cost_null = nb.cost;
   }
   out.phi_null = phi_null;
+  out.cost_null = cost_null;
 
   Env env;
   env.cfg = cfg;
-  env.reset(sys, phi_null, g_null);
+  env.reset(sys, phi_null, g_null, cost_null);
   VectorXd obs = env.observe();
 
   Rng arng(action_subseed(seed));
@@ -143,10 +144,13 @@ static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64
   }
   out.outcome = env.outcome;
   out.phi = env.sys.phi();
+  out.cost_eval = static_cast<double>(env.total_eval);
 
   out.jammed = (env.outcome == CONVERGED || env.outcome == CAPPED || env.outcome == QUIESCED);
-  if (out.jammed)
+  if (out.jammed) {
+    out.disp = env.disp;  // terminal relaxation displacement (2N+2)
     fill_final_state(env.sys, save, want_hessian, want_spectrum, want_moduli, out);
+  }
   return out;
 }
 
@@ -155,7 +159,8 @@ run_episodes_batch(const System& proto, const Policy& pol,
                    const std::vector<uint64_t>& seeds, const EnvConfig& cfg,
                    const SaveFlags& save, int parallel_mode,
                    const std::vector<double>& phi_null,
-                   const std::vector<double>& g_null) {
+                   const std::vector<double>& g_null,
+                   const std::vector<double>& cost_null) {
   const int E = static_cast<int>(seeds.size());
   std::vector<EpisodeOut> out(E);
 
@@ -167,6 +172,7 @@ run_episodes_batch(const System& proto, const Policy& pol,
   };
   auto pn_of = [&](int i) { return (i < static_cast<int>(phi_null.size())) ? phi_null[i] : NAN; };
   auto gn_of = [&](int i) { return (i < static_cast<int>(g_null.size())) ? g_null[i] : NAN; };
+  auto cn_of = [&](int i) { return (i < static_cast<int>(cost_null.size())) ? cost_null[i] : NAN; };
 
   const int prev_eigen = Eigen::nbThreads();
   if (parallel_mode == 0) {
@@ -176,14 +182,14 @@ run_episodes_batch(const System& proto, const Policy& pol,
 #endif
     for (int i = 0; i < E; ++i) {
       auto w = want(i);
-      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), w.first,
-                               w.second, save.save_moduli);
+      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), cn_of(i),
+                               w.first, w.second, save.save_moduli);
     }
   } else {
     for (int i = 0; i < E; ++i) {
       auto w = want(i);
-      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), w.first,
-                               w.second, save.save_moduli);
+      out[i] = run_one_episode(proto, pol, seeds[i], cfg, save, pn_of(i), gn_of(i), cn_of(i),
+                               w.first, w.second, save.save_moduli);
     }
   }
   Eigen::setNbThreads(prev_eigen);
@@ -202,9 +208,12 @@ static py::dict episode_to_dict(const EpisodeOut& e) {
   d["phi"] = e.phi;
   d["phi_null"] = e.phi_null;
   d["steps"] = e.steps;
+  d["cost_eval"] = e.cost_eval;
+  d["cost_null"] = e.cost_null;
   d["jammed"] = e.jammed;
   if (e.jammed) {
     d["x_final"] = VectorXd(e.x_final);
+    d["disp"] = VectorXd(e.disp);
     d["L"] = e.L;
     d["gamma"] = e.gamma;
     d["P_int"] = e.P_int;
@@ -278,11 +287,13 @@ void register_rollout_impl(py::module_& m) {
       "run_episodes_batch",
       [](const System& proto, const Policy& pol, const std::vector<uint64_t>& seeds,
          const EnvConfig& cfg, const SaveFlags& save, int parallel_mode,
-         const std::vector<double>& phi_null, const std::vector<double>& g_null) {
+         const std::vector<double>& phi_null, const std::vector<double>& g_null,
+         const std::vector<double>& cost_null) {
         std::vector<EpisodeOut> res;
         {
           py::gil_scoped_release rel;
-          res = run_episodes_batch(proto, pol, seeds, cfg, save, parallel_mode, phi_null, g_null);
+          res = run_episodes_batch(proto, pol, seeds, cfg, save, parallel_mode, phi_null, g_null,
+                                   cost_null);
         }
         py::list out;
         for (const auto& e : res) out.append(episode_to_dict(e));
@@ -291,6 +302,7 @@ void register_rollout_impl(py::module_& m) {
       py::arg("proto"), py::arg("policy"), py::arg("seeds"), py::arg("cfg") = EnvConfig{},
       py::arg("save") = SaveFlags{}, py::arg("parallel_mode") = 0,
       py::arg("phi_null") = std::vector<double>{}, py::arg("g_null") = std::vector<double>{},
+      py::arg("cost_null") = std::vector<double>{},
       "Run E episodes under the policy; returns a list of per-episode result dicts.");
 }
 

@@ -185,6 +185,8 @@ def _collect_spectra_round(camp: str, r: int) -> dict | None:
     if not shards:
         return None
     Bs, Gs, dzs, phis, omegas, eig_list = [], [], [], [], [], []
+    # box-inclusive spectrum + relaxation-mode projection (plan parts B/C)
+    eig_full_list, omega_box, proj_om_list, proj_w_list, soft_fracs = [], [], [], [], []
     for sf in shards:
         try:
             z = np.load(sf, allow_pickle=True)
@@ -198,6 +200,17 @@ def _collect_spectra_round(camp: str, r: int) -> dict | None:
         if "eig" in z:
             for e in z["eig"]:
                 eig_list.append(np.asarray(e, np.float32))
+        if "eig_full" in z:
+            for e in z["eig_full"]:
+                eig_full_list.append(np.asarray(e, np.float32))
+        if "omega_box_star" in z: omega_box.extend(z["omega_box_star"].tolist())
+        if "proj_omega" in z:
+            for e in z["proj_omega"]:
+                proj_om_list.append(np.asarray(e, np.float32))
+        if "proj_w" in z:
+            for e in z["proj_w"]:
+                proj_w_list.append(np.asarray(e, np.float32))
+        if "soft_proj_frac" in z: soft_fracs.extend(z["soft_proj_frac"].tolist())
     if not phis:
         return None
     return {
@@ -207,6 +220,11 @@ def _collect_spectra_round(camp: str, r: int) -> dict | None:
         "phi": np.array(phis, np.float32),
         "omega_star": np.array(omegas, np.float32),
         "eig_list": eig_list,
+        "eig_full_list": eig_full_list,
+        "omega_box_star": np.array(omega_box, np.float32),
+        "proj_omega_list": proj_om_list,
+        "proj_w_list": proj_w_list,
+        "soft_proj_frac": np.array(soft_fracs, np.float32),
     }
 
 
@@ -273,7 +291,7 @@ def _build_vdos_and_mechanics(camp: str, spectra_rounds: list[int]) -> dict:
         mech_edges[k] = edges
         mech_counts[k] = counts
 
-    return {
+    out = {
         "vdos": {
             "rounds":      np.array(valid, np.int32),
             "omega_edges": omega_edges,
@@ -290,6 +308,67 @@ def _build_vdos_and_mechanics(camp: str, spectra_rounds: list[int]) -> dict:
             **{f"{k}_std":  np.array(mech_std[k],  np.float32) for k in mech_keys},
         },
     }
+
+    # ---- box-inclusive VDOS + relaxation-mode projection (plan parts B/C) ----
+    has_box = any(per_round[r]["eig_full_list"] for r in valid)
+    if has_box:
+        box_max = 0.0
+        for r in valid:
+            for eig in per_round[r]["eig_full_list"]:
+                om = _eig_to_omega(eig)
+                if om.size:
+                    box_max = max(box_max, float(np.percentile(om, 99.9)))
+        if box_max == 0.0:
+            box_max = 1.0
+        box_edges = np.linspace(0.0, box_max, VDOS_BINS + 1, dtype=np.float32)
+        box_counts = np.zeros((len(valid), VDOS_BINS), np.float32)
+        box_omega_star = np.zeros(len(valid), np.float32)
+        box_n_states = np.zeros(len(valid), np.int32)
+        # projections: average per-mode projection weight as a function of omega
+        proj_counts = np.zeros((len(valid), VDOS_BINS), np.float32)
+        soft_mean = np.zeros(len(valid), np.float32)
+
+        for i, r in enumerate(valid):
+            d = per_round[r]
+            box_n_states[i] = len(d["eig_full_list"])
+            obs = d["omega_box_star"]
+            box_omega_star[i] = float(np.nanmean(obs)) if obs.size else np.nan
+            all_box = (np.concatenate([_eig_to_omega(e) for e in d["eig_full_list"]])
+                       if d["eig_full_list"] else np.array([]))
+            if all_box.size:
+                c, _ = np.histogram(all_box, bins=box_edges)
+                s = c.sum()
+                box_counts[i] = c / s if s else c
+            # projection-weight spectrum: histogram omega weighted by projection weight,
+            # averaged over states (the two ~zero modes are pre-dropped in postprocess).
+            pw = np.zeros(VDOS_BINS, np.float32)
+            npos = 0
+            for om, wt in zip(d["proj_omega_list"], d["proj_w_list"]):
+                om = np.asarray(om, np.float64); wt = np.asarray(wt, np.float64)
+                if om.size and wt.size:
+                    h, _ = np.histogram(om, bins=box_edges, weights=wt)
+                    pw += h.astype(np.float32)
+                    npos += 1
+            proj_counts[i] = pw / npos if npos else pw
+            sf = d["soft_proj_frac"]
+            soft_mean[i] = float(np.nanmean(sf)) if sf.size else np.nan
+
+        out["vdos_box"] = {
+            "rounds":      np.array(valid, np.int32),
+            "omega_edges": box_edges,
+            "counts":      box_counts,
+            "omega_star":  box_omega_star,
+            "n_states":    box_n_states,
+        }
+        out["projections"] = {
+            "rounds":         np.array(valid, np.int32),
+            "omega_edges":    box_edges,
+            "weight":         proj_counts,   # mean projection weight per omega bin
+            "soft_proj_frac": soft_mean,     # motion fraction in softest decile of modes
+            "n_states":       box_n_states,
+        }
+
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -506,6 +585,16 @@ def build_campaign_analysis(
             if "mechanics" in vm:
                 mg = f.create_group("mechanics")
                 _write_arrays(mg, vm["mechanics"])
+
+            # box-inclusive VDOS (full enthalpy Hessian spectrum)
+            if "vdos_box" in vm:
+                vbg = f.create_group("vdos_box")
+                _write_arrays(vbg, vm["vdos_box"])
+
+            # relaxation-mode projections (terminal motion onto full-Hessian modes)
+            if "projections" in vm:
+                pjg = f.create_group("projections")
+                _write_arrays(pjg, vm["projections"])
 
             # actions
             if "actions" in ao:

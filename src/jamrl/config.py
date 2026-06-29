@@ -32,9 +32,10 @@ class Config:
     n_relax: int = 20
     T_cap: int = 60
     # reward
-    reward_mode: str = "density"  # density | shear_modulus
+    reward_mode: str = "density"  # density | shear_modulus | speed
     w_phi: float = 400.0          # density-mode weight: w_phi*(phi - phi_null)
     w_G: float = 200.0            # shear-mode weight: w_G*(G - G_null); tune so reward ~ O(1)
+    w_speed: float = 200.0        # speed-mode weight: w_speed*(cost_null - cost)/cost_null
     c_step: float = 0.01
     fail_pen: float = 2.0
     trunc_pen: float = 0.5
@@ -74,6 +75,9 @@ class Config:
     save_hessian: str = "sparse"  # none | spectrum | sparse | dense
     hessian_stride: int = 1
     compression: str = "gzip"
+    # box-inclusive VDOS + relaxation-mode projection (postprocess; plan parts B/C)
+    dos_full: bool = False   # also diagonalize the full enthalpy Hessian (box DOF incl.)
+    proj_k: int = 60         # # of lowest relaxation modes for box-VDOS + projection
     # node-local scratch staging (HPC): write heavy outputs here, copy to the
     # persistent campaign at task end. Supports $VARS (e.g. "$TMPDIR"); empty=off.
     node_scratch: str = ""
@@ -157,6 +161,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
             parser.add_argument(flag, dest=f.name, type=int, default=argparse.SUPPRESS)
         elif f.type == "float":
             parser.add_argument(flag, dest=f.name, type=float, default=argparse.SUPPRESS)
+        elif f.type == "bool":
+            parser.add_argument(flag, dest=f.name, type=str, default=argparse.SUPPRESS,
+                                help=f"{f.name} (true/false)")
         else:  # str fields
             parser.add_argument(flag, dest=f.name, type=str, default=argparse.SUPPRESS)
 
@@ -179,6 +186,8 @@ def from_args(args: argparse.Namespace) -> Config:
                 v = int(v)
             elif ftype == "float":
                 v = float(v)
+            elif ftype == "bool" and isinstance(v, str):
+                v = v.strip().lower() in ("1", "true", "yes", "on")
             overrides[name] = v
     return base.replace(**overrides)
 
@@ -187,7 +196,7 @@ def from_args(args: argparse.Namespace) -> Config:
 # Bridges into the C++ core's EnvConfig / SaveFlags.
 # ----------------------------------------------------------------------- #
 _SAVE_HESSIAN_CODE = {"none": 0, "spectrum": 1, "sparse": 2, "dense": 3}
-_REWARD_MODE_CODE = {"density": 0, "shear_modulus": 1}
+_REWARD_MODE_CODE = {"density": 0, "shear_modulus": 1, "speed": 2}
 
 
 def env_config(cfg: Config):
@@ -208,6 +217,7 @@ def env_config(cfg: Config):
     ec.reward_mode = _REWARD_MODE_CODE[cfg.reward_mode]
     ec.w_phi = cfg.w_phi
     ec.w_G = cfg.w_G
+    ec.w_speed = cfg.w_speed
     ec.c_step = cfg.c_step
     ec.fail_pen = cfg.fail_pen
     ec.trunc_pen = cfg.trunc_pen

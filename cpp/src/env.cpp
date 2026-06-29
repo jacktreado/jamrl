@@ -15,12 +15,33 @@ static inline double clampd(double v, double lo, double hi) {
 }
 
 // Terminal objective reward for a jammed state, selected by reward_mode.
-// DENSITY: w_phi*(phi - phi_null);  SHEAR: w_G*(G - G_null) at fixed pressure.
+//   DENSITY: w_phi*(phi - phi_null)
+//   SHEAR:   w_G*(G - G_null) at fixed pressure
+//   SPEED:   w_speed*(cost_null - total_eval)/cost_null when the packing meets the
+//            null density floor (phi >= phi_null); otherwise the DENSITY penalty
+//            term, which is <0 below the floor and pushes the policy back over it.
 static double objective_reward(const EnvConfig& cfg, const System& sys, double phi_now,
-                               double phi_null, double G_null) {
+                               double phi_null, double G_null, double cost_null,
+                               long total_eval) {
+  if (cfg.reward_mode == REWARD_SPEED) {
+    if (phi_now >= phi_null && cost_null > 0.0)
+      return cfg.w_speed * (cost_null - static_cast<double>(total_eval)) / cost_null;
+    return cfg.w_phi * (phi_now - phi_null);  // below density floor
+  }
   if (cfg.reward_mode == REWARD_SHEAR)
     return cfg.w_G * (shear_modulus(sys) - G_null);
   return cfg.w_phi * (phi_now - phi_null);  // REWARD_DENSITY (default)
+}
+
+// Net displacement of the full-enthalpy coordinate vector x = [s..., ln L, gamma]
+// (dim 2N+2) between two configs, with minimum-image on the reduced particle
+// coordinates and the shear strain (raw on ln L). Used for projecting the
+// terminal relaxation motion onto the Hessian relaxation modes.
+static VectorXd coord_displacement(const VectorXd& x_post, const VectorXd& x_pre, int N) {
+  VectorXd d = x_post - x_pre;
+  for (int i = 0; i < 2 * N; ++i) d[i] -= std::round(d[i]);  // reduced particle coords
+  d[2 * N + 1] -= std::round(d[2 * N + 1]);                  // shear strain gamma
+  return d;
 }
 
 int finish_budget(double P, int finish_cap, int finish_cap_max) {
@@ -28,10 +49,12 @@ int finish_budget(double P, int finish_cap, int finish_cap_max) {
   return std::min(finish_cap_max, std::max(finish_cap, scaled));
 }
 
-void Env::reset(const System& proto, double phi_null_value, double G_null_value) {
+void Env::reset(const System& proto, double phi_null_value, double G_null_value,
+                double cost_null_value) {
   sys = proto;
   phi_null = phi_null_value;
   G_null = G_null_value;
+  cost_null = cost_null_value;
   t = 0;
   prev_aP = 0.0;
   prev_aS = 0.0;
@@ -39,6 +62,8 @@ void Env::reset(const System& proto, double phi_null_value, double G_null_value)
   done = false;
   outcome = ONGOING;
   total_reward = 0.0;
+  total_eval = 0;
+  disp = VectorXd();
   last_ev = evaluate(sys, 0.0, 0.0);
 }
 
@@ -75,7 +100,9 @@ Transition Env::step(double aP_raw, double aS_raw) {
   const double A0 = sys.area();                                        // frozen area
   const double sigF = cfg.kappa_sigma * P * A0 * aS;                   // frozen shear force
 
-  lbfgs_relax(sys, dP, sigF, cfg.n_relax, cfg.lbfgs, cfg.tol);
+  VectorXd x_pre = sys.x;  // pre-relaxation config (terminal-displacement baseline)
+  RelaxResult R = lbfgs_relax(sys, dP, sigF, cfg.n_relax, cfg.lbfgs, cfg.tol);
+  total_eval += R.n_eval;
   gamma_wrap(sys);
   EvalResult ev = evaluate(sys, 0.0, 0.0);  // unbiased view
   last_ev = ev;
@@ -97,19 +124,24 @@ Transition Env::step(double aP_raw, double aS_raw) {
     else if (ev.maxOv > 0.9) oc = OVERLAP;
     else oc = MELT;
   } else if (is_converged_unbiased(ev, sys, cfg.tol)) {
-    reward += objective_reward(cfg, sys, phi_now, phi_null, G_null);
+    reward += objective_reward(cfg, sys, phi_now, phi_null, G_null, cost_null, total_eval);
+    disp = coord_displacement(sys.x, x_pre, sys.N);  // motion into the jammed state
     dn = true;
     oc = CONVERGED;
   } else if (t >= cfg.T_cap || quiet >= cfg.quiesce_n) {
     // finish-and-measure: release loads, relax up to the pressure-scaled budget
     const int cap = finish_budget(P, cfg.finish_cap, cfg.finish_cap_max);
-    lbfgs_relax(sys, 0.0, 0.0, cap, cfg.lbfgs, cfg.tol);
+    x_pre = sys.x;  // re-baseline: the release relaxation is the terminal motion
+    R = lbfgs_relax(sys, 0.0, 0.0, cap, cfg.lbfgs, cfg.tol);
+    total_eval += R.n_eval;
     gamma_wrap(sys);
     ev = evaluate(sys, 0.0, 0.0);
     last_ev = ev;
     phi_now = sys.phi();
     if (is_converged_unbiased(ev, sys, cfg.tol)) {
-      reward += objective_reward(cfg, sys, phi_now, phi_null, G_null) - cfg.trunc_pen;
+      reward += objective_reward(cfg, sys, phi_now, phi_null, G_null, cost_null, total_eval) -
+                cfg.trunc_pen;
+      disp = coord_displacement(sys.x, x_pre, sys.N);  // motion into the jammed state
       oc = (quiet >= cfg.quiesce_n) ? QUIESCED : CAPPED;
     } else {
       reward -= cfg.fail_pen;
@@ -141,25 +173,13 @@ Transition Env::step(double aP_raw, double aS_raw) {
   return tr;
 }
 
-double compute_null_phi(System proto, const EnvConfig& cfg) {
-  // phi_null must equal the density an actual zero-action EPISODE reaches
-  // (plan 5.5): jamming minimization is path-dependent, so a one-shot relax
-  // would land in a different basin than the macro-stepped null rollout.
-  Env env;
-  env.cfg = cfg;
-  env.reset(proto, 0.0);  // baseline irrelevant to dynamics
-  int guard = 0;
-  while (!env.done && guard++ < cfg.T_cap + 4) {
-    env.step(0.0, 0.0);
-  }
-  return env.sys.phi();
-}
-
-std::pair<double, double> compute_null_phi_G(System proto, EnvConfig cfg) {
-  // One zero-action episode -> both phi_null and the shear modulus of the
-  // null-protocol jammed state (the SHEAR-mode reward baseline). Force DENSITY
-  // mode on the local copy so the per-step reward path never pays for moduli;
-  // we measure G once, at the end.
+NullBaselines compute_null_baselines(System proto, EnvConfig cfg) {
+  // One zero-action episode -> all reward baselines: phi_null (density reached by
+  // the null protocol; jamming minimization is path-dependent so a one-shot relax
+  // would land elsewhere -- plan 5.5), G_null (shear modulus of that jammed state),
+  // and cost_null (its total lbfgs evaluate() count, the SPEED-mode baseline).
+  // Force DENSITY mode on the local copy so the per-step reward path never pays
+  // for moduli and never recurses into the speed baseline; we measure G once.
   cfg.reward_mode = REWARD_DENSITY;
   Env env;
   env.cfg = cfg;
@@ -168,7 +188,20 @@ std::pair<double, double> compute_null_phi_G(System proto, EnvConfig cfg) {
   while (!env.done && guard++ < cfg.T_cap + 4) {
     env.step(0.0, 0.0);
   }
-  return {env.sys.phi(), shear_modulus(env.sys)};
+  NullBaselines nb;
+  nb.phi = env.sys.phi();
+  nb.G = shear_modulus(env.sys);
+  nb.cost = static_cast<double>(env.total_eval);
+  return nb;
+}
+
+double compute_null_phi(System proto, const EnvConfig& cfg) {
+  return compute_null_baselines(proto, cfg).phi;
+}
+
+std::pair<double, double> compute_null_phi_G(System proto, EnvConfig cfg) {
+  NullBaselines nb = compute_null_baselines(proto, cfg);
+  return {nb.phi, nb.G};
 }
 
 static py::dict transition_to_dict(const Transition& tr) {
@@ -199,6 +232,7 @@ void register_env_impl(py::module_& m) {
       .def_readwrite("reward_mode", &EnvConfig::reward_mode)
       .def_readwrite("w_phi", &EnvConfig::w_phi)
       .def_readwrite("w_G", &EnvConfig::w_G)
+      .def_readwrite("w_speed", &EnvConfig::w_speed)
       .def_readwrite("c_step", &EnvConfig::c_step)
       .def_readwrite("fail_pen", &EnvConfig::fail_pen)
       .def_readwrite("trunc_pen", &EnvConfig::trunc_pen)
@@ -216,18 +250,21 @@ void register_env_impl(py::module_& m) {
       .def_readonly("done", &Env::done)
       .def_readonly("outcome", &Env::outcome)
       .def_readonly("total_reward", &Env::total_reward)
+      .def_readonly("total_eval", &Env::total_eval)
       .def_readonly("phi_null", &Env::phi_null)
       .def_readonly("G_null", &Env::G_null)
+      .def_readonly("cost_null", &Env::cost_null)
+      .def_property_readonly("disp", [](const Env& e) { return VectorXd(e.disp); })
       .def_property_readonly("sys", [](Env& e) { return &e.sys; },
                              py::return_value_policy::reference_internal)
       .def_property_readonly("phi", [](const Env& e) { return e.sys.phi(); })
       .def("reset",
-           [](Env& e, const System& proto, double phi_null, double G_null) {
-             e.reset(proto, phi_null, G_null);
+           [](Env& e, const System& proto, double phi_null, double G_null, double cost_null) {
+             e.reset(proto, phi_null, G_null, cost_null);
              return VectorXd(e.observe());
            },
            py::arg("proto"), py::arg("phi_null") = 0.0, py::arg("G_null") = 0.0,
-           "Reset to `proto`; returns the initial observation.")
+           py::arg("cost_null") = 0.0, "Reset to `proto`; returns the initial observation.")
       .def("step",
            [](Env& e, double aP, double aS) { return transition_to_dict(e.step(aP, aS)); },
            py::arg("a_P"), py::arg("a_sigma"),
@@ -239,6 +276,18 @@ void register_env_impl(py::module_& m) {
   m.def("compute_null_phi_G", &compute_null_phi_G, py::arg("proto"), py::arg("cfg") = EnvConfig{},
         "Density and shear modulus of a zero-action episode on `proto` "
         "(returns (phi_null, G_null); SHEAR-mode reward baseline).");
+  m.def("compute_null_baselines",
+        [](System proto, EnvConfig cfg) {
+          NullBaselines nb = compute_null_baselines(proto, cfg);
+          py::dict d;
+          d["phi"] = nb.phi;
+          d["G"] = nb.G;
+          d["cost"] = nb.cost;
+          return d;
+        },
+        py::arg("proto"), py::arg("cfg") = EnvConfig{},
+        "All null-protocol reward baselines from one zero-action episode: "
+        "{phi, G, cost} (cost = total lbfgs evaluate() count; SPEED-mode baseline).");
 
   // Outcome-code constants for Python-side decoding.
   py::dict oc;

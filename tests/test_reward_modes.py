@@ -138,3 +138,93 @@ def test_summary_roundtrips_eval_dG(tmp_path):
     df = storage.read_summary(camp)
     assert "eval_dG" in df.columns
     assert float(df.iloc[0]["eval_dG"]) == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- #
+# 6. Speed reward mode (force-eval cost, gated on the null density floor).
+# --------------------------------------------------------------------------- #
+def test_speed_mode_cli_and_env_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config")
+    config.add_arguments(parser)
+    args = parser.parse_args(["--reward-mode", "speed", "--w-speed", "321"])
+    cfg = config.from_args(args)
+    assert cfg.reward_mode == "speed"
+    assert cfg.w_speed == 321.0
+    ec = config.env_config(cfg)
+    assert ec.reward_mode == 2  # _REWARD_MODE_CODE["speed"]
+    assert ec.w_speed == 321.0
+
+
+def test_compute_null_baselines_consistent():
+    cfg = Config(N=32, P=1e-3, phi0=0.80)
+    ec = config.env_config(cfg)
+    proto = core.make_system(cfg.N, 7, cfg.phi0, cfg.P)
+    nb = core.compute_null_baselines(proto, ec)
+    phi_only = float(core.compute_null_phi(proto, ec))
+    assert nb["phi"] == pytest.approx(phi_only, rel=1e-9, abs=1e-12)
+    assert np.isfinite(nb["G"])
+    assert nb["cost"] > 0.0  # null episode does real relaxation work
+
+
+def test_speed_reward_term_and_cost_recorded():
+    """Speed mode records per-episode force-eval cost and, on jammed episodes that
+    meet the null density floor, swaps the density term for w_speed*(cost_null-cost)/cost_null."""
+    N, w_speed = 32, 200.0
+    seeds = [1, 2, 3, 4]
+    dcfg = Config(N=N, P=1e-3, phi0=0.80, reward_mode="density")
+    pcfg = Config(N=N, P=1e-3, phi0=0.80, reward_mode="speed", w_speed=w_speed)
+    pol = policy.build_core_policy(policy.policy_arrays(*_fresh_policy()))
+    proto = core.make_system(N, seeds[0], 0.80, 1e-3)
+    ec_d = config.env_config(dcfg)
+    ec_p = config.env_config(pcfg)
+
+    phin, cnull = [], []
+    for s in seeds:
+        p = core.make_system(N, s, 0.80, 1e-3)
+        nb = core.compute_null_baselines(p, ec_p)
+        phin.append(float(nb["phi"])); cnull.append(float(nb["cost"]))
+
+    sf = core.SaveFlags(); sf.save_hessian = 0; sf.save_moduli = False; sf.save_contacts = False
+    eps_d = core.run_episodes_batch(proto, pol, seeds, ec_d, sf, 1, phin, [], [])
+    eps_p = core.run_episodes_batch(proto, pol, seeds, ec_p, sf, 1, phin, [], cnull)
+
+    compared = 0
+    for i, (ed, ep) in enumerate(zip(eps_d, eps_p)):
+        assert np.allclose(np.asarray(ed["act"]), np.asarray(ep["act"]))  # identical trajectory
+        assert ep["cost_eval"] > 0.0
+        assert ep["cost_null"] == pytest.approx(cnull[i], rel=1e-9)
+        if not (ed["jammed"] and ep["jammed"]):
+            continue
+        # terminal-term swap only when the density floor is met
+        if ep["phi"] >= phin[i]:
+            delta = float(ep["rew"][-1]) - float(ed["rew"][-1])
+            expected = (w_speed * (cnull[i] - ep["cost_eval"]) / cnull[i]
+                        - dcfg.w_phi * (ep["phi"] - phin[i]))
+            assert delta == pytest.approx(expected, rel=1e-6, abs=1e-6)
+            compared += 1
+    assert compared > 0
+
+
+def test_greedy_eval_emits_eval_speed(tmp_path):
+    cfg = Config(N=32, P=1e-3, phi0=0.80, reward_mode="speed",
+                 hidden=(16, 16), eval_seeds=(101, 102, 103),
+                 campaign_root=str(tmp_path), name="spd", seed=1)
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+    cfg.save_yaml(os.path.join(camp, "config.yaml"))
+    policy.init_policy_npz(storage.policy_path(camp, 0), hidden=cfg.hidden, seed=cfg.seed)
+
+    stats = learn.greedy_eval(cfg, camp, 0)
+    assert "eval_speed" in stats and "eval_cost_kevals" in stats
+    assert np.isfinite(stats["eval_cost_kevals"])
+
+
+def test_summary_roundtrips_eval_speed(tmp_path):
+    cfg = Config(campaign_root=str(tmp_path), name="rts")
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+    storage.append_summary(camp, {"round": 0, "eval_speed": 0.25, "eval_cost_kevals": 12.0})
+    df = storage.read_summary(camp)
+    assert "eval_speed" in df.columns
+    assert float(df.iloc[0]["eval_speed"]) == pytest.approx(0.25)

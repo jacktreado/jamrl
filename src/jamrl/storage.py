@@ -156,6 +156,11 @@ def write_states_h5(path, episodes, radii, P_target, save_hessian="sparse",
                 g.create_dataset("radii", data=radii, compression=compression)
                 g.create_dataset("contacts", data=np.asarray(e["contacts"], np.int32),
                                  compression=compression)
+                # terminal relaxation displacement (2N+2: particle ds, dlnL, dgamma),
+                # for projecting the motion into the jammed state onto the relaxation modes.
+                if "disp" in e and np.asarray(e["disp"]).size:
+                    g.create_dataset("disp", data=np.asarray(e["disp"], np.float32),
+                                     compression=compression)
 
                 if save_hessian == "sparse" and "H_data" in e:
                     g.create_dataset("H_data", data=np.asarray(e["H_data"], np.float64),
@@ -200,7 +205,7 @@ def iter_states_h5(path):
 # Summary parquet (append-only; plan section 7.2)
 # ----------------------------------------------------------------------- #
 SUMMARY_COLUMNS = [
-    "round", "episodes", "mean_reward", "eval_dphi", "eval_dG", "eval_success",
+    "round", "episodes", "mean_reward", "eval_dphi", "eval_dG", "eval_speed", "eval_success",
     "eval_cost_kevals", "mean_absaP", "mean_absaS", "mean_absgamma",
     "Bbar", "Gbar", "dzbar", "rattler_frac", "shear_stable_frac",
     "omega_star", "sigma_policy", "wall_seconds", "git_hash",

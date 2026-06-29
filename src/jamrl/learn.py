@@ -166,13 +166,14 @@ def greedy_eval(cfg, camp, r) -> dict:
     d["log_std"] = np.full_like(np.asarray(d["log_std"], float), -100.0)  # deterministic
     core_pol = policy.build_core_policy(d)
     seeds = [int(s) for s in cfg.eval_seeds]
-    phin, gnull = rollout.ensure_null_baselines(cfg, camp, seeds)
+    phin, gnull, cnull = rollout.ensure_null_baselines(cfg, camp, seeds)
     proto = _core.make_system(cfg.N, seeds[0], cfg.phi0, cfg.P)
     ec = config.env_config(cfg)
     sf = _core.SaveFlags(); sf.save_hessian = 0; sf.save_moduli = True; sf.save_contacts = False
     gn = [float(x) for x in gnull] if gnull is not None else []
+    cn = [float(x) for x in cnull] if cnull is not None else []
     eps = _core.run_episodes_batch(proto, core_pol, seeds, ec, sf,
-                                   config.parallel_mode_code(cfg), [float(x) for x in phin], gn)
+                                   config.parallel_mode_code(cfg), [float(x) for x in phin], gn, cn)
 
     jam = [e for e in eps if e["jammed"]]
     dphi = [e["phi"] - e["phi_null"] for e in eps]
@@ -183,6 +184,11 @@ def greedy_eval(cfg, camp, r) -> dict:
               if eps[i]["jammed"] and "G" in eps[i]]
     else:
         dG = []
+    # eval_speed = fractional force-eval speedup over the null protocol, on jammed
+    # episodes (speed mode); >0 means the policy reaches jamming with less work.
+    speedup = [(e["cost_null"] - e["cost_eval"]) / e["cost_null"]
+               for e in jam if e.get("cost_null", 0.0) > 0.0]
+    cost_eval_all = [e["cost_eval"] for e in eps if "cost_eval" in e]
     aP = [float(np.abs(np.clip(np.asarray(e["act"])[:, 0], -1, 1)).mean()) for e in eps if e["T"] > 0]
     aS = [float(np.abs(np.clip(np.asarray(e["act"])[:, 1], -1, 1)).mean()) for e in eps if e["T"] > 0]
 
@@ -192,6 +198,8 @@ def greedy_eval(cfg, camp, r) -> dict:
     return {
         "eval_dphi": mean(dphi),
         "eval_dG": mean(dG),
+        "eval_speed": mean(speedup),
+        "eval_cost_kevals": mean([c / 1000.0 for c in cost_eval_all]),
         "eval_success": len(jam) / len(eps) if eps else 0.0,
         "mean_absaP": mean(aP),
         "mean_absaS": mean(aS),

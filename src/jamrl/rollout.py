@@ -31,32 +31,45 @@ def ensure_null_cache(cfg, camp, seeds) -> list[float]:
 
 
 def ensure_null_baselines(cfg, camp, seeds):
-    """Return (phi_null, G_null|None) aligned with `seeds`, caching any missing.
+    """Return (phi_null, G_null|None, cost_null|None) aligned with `seeds`, caching missing.
 
     Density mode needs only phi_null (cheap; no Hessian). Shear mode also needs
-    G_null (the null protocol's shear modulus at the same P); both are computed
-    from a single null run via `_core.compute_null_phi_G` and cached separately.
+    G_null (the null protocol's shear modulus at the same P). Speed mode needs
+    cost_null (the null protocol's force-eval count). The extra baselines are
+    computed from a single null run via `_core.compute_null_baselines` and cached
+    in separate per-field shards.
     """
-    if cfg.reward_mode != "shear_modulus":
-        return ensure_null_cache(cfg, camp, seeds), None
+    if cfg.reward_mode == "shear_modulus":
+        fields = ("G",)
+    elif cfg.reward_mode == "speed":
+        fields = ("cost",)
+    else:
+        return ensure_null_cache(cfg, camp, seeds), None, None
 
     keys = [(cfg.N, cfg.P, int(s)) for s in seeds]
     cphi = storage.null_cache_get(camp, keys, field="phi")
-    cG = storage.null_cache_get(camp, keys, field="G")
-    missing = [k for k in keys if k not in cphi or k not in cG]
+    cextra = {fld: storage.null_cache_get(camp, keys, field=fld) for fld in fields}
+    missing = [k for k in keys if k not in cphi or any(k not in cextra[fld] for fld in fields)]
     if missing:
         ec = config.env_config(cfg)
-        newphi, newG = {}, {}
+        newphi = {}
+        newextra = {fld: {} for fld in fields}
         for (N, P, s) in missing:
             proto = _core.make_system(N, int(s), cfg.phi0, P)
-            phi, G = _core.compute_null_phi_G(proto, ec)
-            newphi[(N, P, s)] = float(phi)
-            newG[(N, P, s)] = float(G)
+            nb = _core.compute_null_baselines(proto, ec)  # {phi, G, cost}
+            newphi[(N, P, s)] = float(nb["phi"])
+            for fld in fields:
+                newextra[fld][(N, P, s)] = float(nb[fld])
         storage.null_cache_update(camp, newphi, field="phi")
-        storage.null_cache_update(camp, newG, field="G")
         cphi.update(newphi)
-        cG.update(newG)
-    return [cphi[k] for k in keys], [cG[k] for k in keys]
+        for fld in fields:
+            storage.null_cache_update(camp, newextra[fld], field=fld)
+            cextra[fld].update(newextra[fld])
+
+    phin = [cphi[k] for k in keys]
+    if cfg.reward_mode == "shear_modulus":
+        return phin, [cextra["G"][k] for k in keys], None
+    return phin, None, [cextra["cost"][k] for k in keys]
 
 
 def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
@@ -67,7 +80,7 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
     pol = policy.build_core_policy(pol_npz)
 
     seeds = seeding.worker_seeds(cfg.seed, r, k, cfg.episodes_per_worker)
-    phin, gnull = ensure_null_baselines(cfg, camp, seeds)
+    phin, gnull, cnull = ensure_null_baselines(cfg, camp, seeds)
 
     proto = _core.make_system(cfg.N, int(seeds[0]) if seeds else 1, cfg.phi0, cfg.P)
     ec = config.env_config(cfg)
@@ -75,8 +88,9 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
     pm = config.parallel_mode_code(cfg)
 
     gn = [float(x) for x in gnull] if gnull is not None else []
+    cn = [float(x) for x in cnull] if cnull is not None else []
     episodes = _core.run_episodes_batch(
-        proto, pol, [int(s) for s in seeds], ec, sf, pm, [float(x) for x in phin], gn
+        proto, pol, [int(s) for s in seeds], ec, sf, pm, [float(x) for x in phin], gn, cn
     )
 
     # Heavy outputs go to node-local scratch (if configured) and are copied to

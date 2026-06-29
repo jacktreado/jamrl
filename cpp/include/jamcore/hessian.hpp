@@ -27,4 +27,15 @@ Eigen::SparseMatrix<double> assemble_hessian_dos(const System& sys, const Backbo
 // smallest-magnitude k (shift-invert near 0), falling back to dense if needed.
 Eigen::VectorXd eigvals_dos(const System& sys, int k);
 
+// Full enthalpy Hessian (2N+2, box DOF included) eigenvalues (ascending). The
+// box-inclusive relaxation spectrum: these are the curvatures of the enthalpy the
+// dynamics actually minimize. k<=0 -> dense (all 2N+2); k>0 -> Spectra lowest-k.
+Eigen::VectorXd eigvals_full_spectrum(const System& sys, int k);
+
+// Full enthalpy Hessian eigenpairs: lowest-k (eigenvalues ascending) with their
+// eigenvectors as columns. k<=0 -> all 2N+2 modes (dense). The eigenvectors are
+// the relaxation modes used to project terminal relaxation motion. Returns
+// {eigenvalues (m), eigenvectors (2N+2 x m)}.
+std::pair<Eigen::VectorXd, Eigen::MatrixXd> eigvecs_full(const System& sys, int k);
+
 }  // namespace jamcore

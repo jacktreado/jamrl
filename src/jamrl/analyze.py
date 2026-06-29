@@ -25,7 +25,10 @@ def print_status(camp: str) -> None:
 
     # The objective column tracked depends on the reward mode.
     mode = getattr(cfg, "reward_mode", "density") if cfg is not None else "density"
-    obj_col, obj_lbl = ("eval_dG", "eval_dG") if mode == "shear_modulus" else ("eval_dphi", "eval_dphi")
+    obj_col, obj_lbl = {
+        "shear_modulus": ("eval_dG", "eval_dG"),
+        "speed": ("eval_speed", "eval_speed"),
+    }.get(mode, ("eval_dphi", "eval_dphi"))
 
     if len(df):
         tail = df.tail(8)
@@ -37,7 +40,7 @@ def print_status(camp: str) -> None:
         last = df.iloc[-1]
         print("  last eval:")
         for k in ("Bbar", "Gbar", "dzbar", "rattler_frac", "shear_stable_frac",
-                  "mean_absaP", "mean_absaS", "mean_absgamma"):
+                  "eval_cost_kevals", "mean_absaP", "mean_absaS", "mean_absgamma"):
             if k in last:
                 print(f"    {k:18s} = {last[k]}")
 

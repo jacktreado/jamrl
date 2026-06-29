@@ -28,10 +28,12 @@ struct EpisodeOut {
   int outcome = ONGOING;
   double phi = 0.0, phi_null = 0.0;
   int steps = 0;
+  double cost_eval = 0.0, cost_null = 0.0;  // force-eval cost + null baseline (SPEED mode)
 
   // final jammed state (only if outcome in {converged, capped, quiesced})
   bool jammed = false;
   VectorXd x_final;  // 2N+2
+  VectorXd disp;     // 2N+2 terminal relaxation displacement (motion into jammed state)
   double L = 0.0, gamma = 0.0, P_int = 0.0;
   int n_contacts = 0, n_rattlers = 0, n_keep = 0;
   double z = 0.0, z_iso = 4.0, dz = 0.0;
@@ -62,6 +64,7 @@ run_episodes_batch(const System& proto, const Policy& pol,
                    const std::vector<uint64_t>& seeds, const EnvConfig& cfg,
                    const SaveFlags& save, int parallel_mode,
                    const std::vector<double>& phi_null,
-                   const std::vector<double>& g_null = {});
+                   const std::vector<double>& g_null = {},
+                   const std::vector<double>& cost_null = {});
 
 }  // namespace jamcore
