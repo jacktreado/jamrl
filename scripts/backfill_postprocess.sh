@@ -8,10 +8,10 @@
 #SBATCH --output=/home/treado/data/jamrl/campaigns/sm_N256_P1e-5/logs/backfill_%A_%a.out
 
 # Match this to the --spectra-stride you'll pass to `jamrl analyze` (default 10).
-STRIDE=10
+STRIDE=5
 CAMP=/home/treado/data/jamrl/campaigns/sm_N256_P1e-5
 
-export OMP_NUM_THREADS=4
+export OMP_NUM_THREADS=1
 export JAMRL_NODE_SCRATCH=/scratch/treado/
 
 conda run -n jamrl python3 - <<EOF
