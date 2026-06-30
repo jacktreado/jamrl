@@ -5,7 +5,7 @@ import pytest
 import jamrl._core as core
 
 
-def make_policy(obs_dim=10, hidden=(16, 16), act_dim=2, seed=0, scale=0.2):
+def make_policy(obs_dim=16, hidden=(16, 16), act_dim=2, seed=0, scale=0.2):  # obs_dim = jamcore::OBS_DIM
     rng = np.random.default_rng(seed)
     obs_mean = np.zeros(obs_dim)
     obs_std = np.ones(obs_dim)

@@ -14,7 +14,8 @@ import numpy as np
 
 from jamrl import storage
 
-OBS_NAMES = ["fInf", "P_int", "Egamma", "gamma", "phi", "z", "maxOv", "t", "prev_aP", "prev_aS"]
+OBS_NAMES = ["fInf", "P_int", "Egamma", "gamma", "phi", "z", "maxOv", "t", "prev_aP", "prev_aS",
+             "G", "w1", "w2", "w3", "w4", "w5"]
 VDOS_BINS = 100
 MECH_BINS = 50
 ACT_BINS  = 60

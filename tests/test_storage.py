@@ -48,7 +48,7 @@ def test_policy_npz_roundtrip_and_core_build(tmp_path):
     pol, norm = policy.init_policy_npz(str(p), hidden=(16, 16), seed=0)
     d = policy.load_policy_npz(str(p))
     core_pol = policy.build_core_policy(d)
-    o = np.zeros(10)
+    o = np.zeros(policy.OBS_DIM)
     mu = core_pol.forward(o)
     assert mu.shape == (2,)
     # numpy net and C++ net agree on the mean for zero obs
@@ -71,7 +71,7 @@ def test_rollout_worker_writes_valid_data(tmp_path):
     # trajectory npz schema
     data = storage.read_rollout_npz(storage.rollout_path(camp, 0, 0))
     E = cfg.episodes_per_worker
-    assert data["obs"].shape[1] == 10 and data["act"].shape[1] == 2
+    assert data["obs"].shape[1] == 16 and data["act"].shape[1] == 2
     assert data["ep_ptr"].shape == (E + 1,)
     assert data["ep_ptr"][-1] == data["obs"].shape[0] == data["rew"].shape[0]
     assert data["seeds"].shape == (E,) and data["outcome"].shape == (E,)

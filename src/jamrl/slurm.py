@@ -135,6 +135,11 @@ def submit(cfg, resume=False, test_only=False) -> int:
     if not os.path.exists(storage.policy_path(camp, start)):
         policy.init_policy_npz(storage.policy_path(camp, start), hidden=cfg.hidden,
                                logstd_init=cfg.logstd_init, seed=cfg.seed)
+    # Compute the fixed shear-reward null ensemble once up front (no-op otherwise),
+    # so rollout array tasks just load it. (run_rollout also computes it lazily
+    # under a file lock if absent.)
+    from jamrl import rollout
+    rollout.ensure_null_ensemble(cfg, camp)
 
     dry = test_only or (shutil.which("sbatch") is None)
     payload = submit_round(cfg, camp, start, dry=dry, test_only=test_only)

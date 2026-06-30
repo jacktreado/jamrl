@@ -7,6 +7,7 @@
 #include "jamcore/moduli.hpp"
 
 #include <cmath>
+#include <limits>
 #include <vector>
 #include <Eigen/SparseCore>
 
@@ -149,6 +150,11 @@ static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64
   out.jammed = (env.outcome == CONVERGED || env.outcome == CAPPED || env.outcome == QUIESCED);
   if (out.jammed) {
     out.disp = env.disp;  // terminal relaxation displacement (2N+2)
+    // Soft-mode edge of the jammed state: reuse the terminal VDOS the env already
+    // measured (lowest real eigenfreq); NaN when VDOS obs is disabled / no modes.
+    out.omega_star = (env.vdos_feat.size() > 0 && env.vdos_feat[0] > 0.0)
+                         ? env.vdos_feat[0]
+                         : std::numeric_limits<double>::quiet_NaN();
     fill_final_state(env.sys, save, want_hessian, want_spectrum, want_moduli, out);
   }
   return out;
@@ -235,6 +241,7 @@ static py::dict episode_to_dict(const EpisodeOut& e) {
       d["B"] = e.B;
       d["G"] = e.G;
     }
+    d["omega_star"] = e.omega_star;
     if (e.has_hessian) {
       d["H_data"] = VectorXd(e.H_data);
       d["H_indices"] = e.H_indices;

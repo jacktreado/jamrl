@@ -26,6 +26,12 @@ def _init_campaign(cfg: Config) -> str:
     p0 = storage.policy_path(camp, 0)
     if not os.path.exists(p0):
         policy.init_policy_npz(p0, hidden=cfg.hidden, logstd_init=cfg.logstd_init, seed=cfg.seed)
+    # Fixed shear-reward baseline: a per-campaign null ensemble (no-op otherwise).
+    from jamrl import rollout
+    ens = rollout.ensure_null_ensemble(cfg, camp)
+    if ens is not None:
+        print(f"[init] null ensemble: {ens['n_jammed']}/{ens['n_null']} jammed, "
+              f"G_mean={ens['G_mean']:.5f} (median {ens['G_median']:.5f})")
     return camp
 
 

@@ -100,6 +100,7 @@ def ppo_update(cfg, pol, val, norm, opt_p, opt_v, traj) -> dict:
 
             opt_p.step(pol.mlp.params() + [pol.log_std],
                        pol.mlp.grads_to_list(dW, db) + [dlogstd], max_norm=1.0)
+            np.maximum(pol.log_std, cfg.logstd_min, out=pol.log_std)  # exploration floor
 
             # ---- value ----
             vpred = val.value(Xb)

@@ -31,10 +31,13 @@ class Config:
     kappa_sigma: float = 0.5
     n_relax: int = 20
     T_cap: int = 60
+    # observation extras (per macro-step; full-enthalpy spectrum)
+    vdos_obs: bool = True         # include the low-frequency VDOS summary in the obs
+    k_vdos: int = 0               # # low modes to solve; 0 -> auto from N (~5th pct omega*)
     # reward
     reward_mode: str = "density"  # density | shear_modulus | speed
     w_phi: float = 400.0          # density-mode weight: w_phi*(phi - phi_null)
-    w_G: float = 200.0            # shear-mode weight: w_G*(G - G_null); tune so reward ~ O(1)
+    w_G: float = 200.0            # shear-mode weight: w_G*(G/G_null - 1); tune so reward ~ O(1)
     w_speed: float = 200.0        # speed-mode weight: w_speed*(cost_null - cost)/cost_null
     c_step: float = 0.01
     fail_pen: float = 2.0
@@ -59,6 +62,7 @@ class Config:
     ent_coef: float = 3e-3
     vf_coef: float = 0.5
     logstd_init: float = -0.5
+    logstd_min: float = -20.0     # exploration floor on log_std (raise to ~-1.6 to slow std decay)
     hidden: tuple = (64, 64)
     cem_pop: int = 64
     cem_elite_frac: float = 0.25
@@ -69,6 +73,7 @@ class Config:
     workers: int = 64
     episodes_per_worker: int = 8
     eval_seeds: tuple = tuple(range(101, 107))
+    n_null: int = 128               # per-campaign null ensemble size (shear reward baseline)
     parallel_mode: str = "episode"  # episode | intra
     threads_per_task: int = 16
     # data
@@ -225,6 +230,8 @@ def env_config(cfg: Config):
     ec.quiesce_n = cfg.quiesce_n
     ec.finish_cap = cfg.finish_cap
     ec.finish_cap_max = cfg.finish_cap_max
+    ec.vdos_obs = cfg.vdos_obs
+    ec.k_vdos = cfg.k_vdos
     ec.tol.ftol_abs = cfg.ftol_abs
     ec.tol.ftol_rel_P = cfg.ftol_rel_P
     ec.tol.ptol = cfg.ptol

@@ -20,7 +20,12 @@ enum Outcome {
   UNFINISHED = 6   // finish-and-measure failed to jam
 };
 
-constexpr int OBS_DIM = 10;
+// Observation layout: 10 base features + current shear modulus G + a
+// low-frequency VDOS summary (the lowest N_VDOS_FEAT *real* eigenfrequencies of
+// the full-enthalpy spectrum, i.e. the soft-mode edge above the ~0 cluster).
+// Keep OBS_DIM in sync with src/jamrl/policy.py.
+constexpr int N_VDOS_FEAT = 5;      // lowest 5 real (nonzero) eigenfrequencies
+constexpr int OBS_DIM = 16;         // 10 base + G(1) + N_VDOS_FEAT(5)
 constexpr int ACT_DIM = 2;
 
 // Reward objective selector (plan: multiple reward modes). DENSITY is the
@@ -49,6 +54,10 @@ struct EnvConfig {
   int quiesce_n = 3;
   int finish_cap = 12000;       // lower bound on finish-and-measure iterations
   int finish_cap_max = 60000;   // hard ceiling (raise to reach jamming at very low P)
+  // per-step observation extras
+  bool obs_extras = true;       // measure G + VDOS each step (off for null runs)
+  bool vdos_obs = true;         // compute the low-frequency VDOS summary each step
+  int k_vdos = 0;               // # low modes to solve; 0 -> auto from N (see env.cpp)
   // tolerances + minimizer
   Tols tol;
   LBFGSParams lbfgs;
@@ -81,11 +90,18 @@ struct Env {
   long total_eval = 0;  // accumulated lbfgs evaluate() calls this episode (SPEED cost)
   VectorXd disp;        // terminal relaxation displacement (2N+2): set when jammed
   EvalResult last_ev;   // last unbiased evaluation
+  // per-step observation extras (raw; observe() normalizes). Refreshed in
+  // step()/reset() from the current `sys` via measure_obs_extras().
+  double G_obs = 0.0;   // current shear modulus G(sys)
+  VectorXd vdos_feat;   // [w1, w2, w3, w4, omega*] raw eigenfrequencies (N_VDOS_FEAT)
 
   void reset(const System& proto, double phi_null_value, double G_null_value = 0.0,
              double cost_null_value = 0.0);
   VectorXd observe() const;
   Transition step(double aP_raw, double aS_raw);
+  // Measure G + the low-frequency VDOS summary of the current `sys` into
+  // G_obs / vdos_feat (one full-enthalpy Hessian assembly each).
+  void measure_obs_extras();
 };
 
 // Pressure-scaled finish-and-measure iteration budget (fix 4.4), capped at

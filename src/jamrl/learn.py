@@ -165,22 +165,36 @@ def greedy_eval(cfg, camp, r) -> dict:
     d = dict(policy.load_policy_npz(storage.policy_path(camp, r)))
     d["log_std"] = np.full_like(np.asarray(d["log_std"], float), -100.0)  # deterministic
     core_pol = policy.build_core_policy(d)
-    seeds = [int(s) for s in cfg.eval_seeds]
-    phin, gnull, cnull = rollout.ensure_null_baselines(cfg, camp, seeds)
-    proto = _core.make_system(cfg.N, seeds[0], cfg.phi0, cfg.P)
     ec = config.env_config(cfg)
     sf = _core.SaveFlags(); sf.save_hessian = 0; sf.save_moduli = True; sf.save_contacts = False
-    gn = [float(x) for x in gnull] if gnull is not None else []
-    cn = [float(x) for x in cnull] if cnull is not None else []
+    if cfg.reward_mode == "shear_modulus":
+        # Paired lift vs the fixed null ensemble: eval on a subset of the ensemble
+        # seeds and compare each episode's G to that seed's stored null G. The obs
+        # is normalized by the broadcast G_mean (as in training), so pass that as gn.
+        ens = rollout.ensure_null_ensemble(cfg, camp)
+        n_eval = min(32, len(ens["jammed_seeds"]))
+        seeds = [int(s) for s in ens["jammed_seeds"][:n_eval]]
+        g_per_seed = [float(x) for x in ens["jammed_G"][:n_eval]]
+        phin = [ens["phi_mean"]] * n_eval
+        gn = [ens["G_mean"]] * n_eval
+        cn = []
+    else:
+        seeds = [int(s) for s in cfg.eval_seeds]
+        phin, gnull, cnull = rollout.ensure_null_baselines(cfg, camp, seeds)
+        g_per_seed = None
+        gn = [float(x) for x in gnull] if gnull is not None else []
+        cn = [float(x) for x in cnull] if cnull is not None else []
+    proto = _core.make_system(cfg.N, seeds[0], cfg.phi0, cfg.P)
     eps = _core.run_episodes_batch(proto, core_pol, seeds, ec, sf,
-                                   config.parallel_mode_code(cfg), [float(x) for x in phin], gn, cn)
+                                   config.parallel_mode_code(cfg), [float(x) for x in phin],
+                                   [float(x) for x in gn], cn)
 
     jam = [e for e in eps if e["jammed"]]
     dphi = [e["phi"] - e["phi_null"] for e in eps]
-    # eval_dG = improvement in shear modulus over the null protocol (shear mode);
-    # episodes align with `seeds`, so gnull[i] is the baseline for eps[i].
-    if gnull is not None:
-        dG = [eps[i]["G"] - gnull[i] for i in range(len(eps))
+    # eval_dG = paired shear-modulus lift over the null ensemble: G_agent(seed_i) -
+    # G_null(seed_i), using the ensemble's stored per-seed null G.
+    if g_per_seed is not None:
+        dG = [eps[i]["G"] - g_per_seed[i] for i in range(len(eps))
               if eps[i]["jammed"] and "G" in eps[i]]
     else:
         dG = []
@@ -209,11 +223,16 @@ def greedy_eval(cfg, camp, r) -> dict:
         "dzbar": mean([e["dz"] for e in jam]),
         "rattler_frac": mean([e["n_rattlers"] / cfg.N for e in jam]),
         "shear_stable_frac": mean([1.0 if e.get("G", 0.0) >= -1e-8 else 0.0 for e in jam]),
+        # soft-mode edge of the jammed packings (lowest real VDOS eigenfreq)
+        "omega_star": mean([e["omega_star"] for e in jam
+                            if "omega_star" in e and np.isfinite(e["omega_star"])]),
     }
 
 
 # ----------------------------------------------------------------------- #
 def learn_round(cfg, camp, r) -> dict:
+    import time
+    t0 = time.time()
     traj, present = aggregate_round(camp, r, cfg.workers)
     if traj is None or present < cfg.min_worker_frac * cfg.workers:
         raise SystemExit(
@@ -239,6 +258,7 @@ def learn_round(cfg, camp, r) -> dict:
         "episodes": int(len(traj["ep_ptr"]) - 1),
         "mean_reward": stats.get("mean_reward", float("nan")),
         "sigma_policy": stats.get("sigma_policy", float("nan")),
+        "wall_seconds": time.time() - t0,  # learn + eval wall time for this round
         "git_hash": prov_hash,
         **eval_stats,
     }

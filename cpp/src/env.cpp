@@ -1,6 +1,10 @@
 // jamcore: the jamming MDP environment + pybind registration.
 #include "jamcore/env.hpp"
 #include "jamcore/moduli.hpp"
+#include "jamcore/hessian.hpp"  // eigvals_full_spectrum (low-frequency VDOS obs)
+
+#include <algorithm>
+#include <vector>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -14,22 +18,33 @@ static inline double clampd(double v, double lo, double hi) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 
+// Observation-normalization constants for the G + VDOS extras (o[10..15]).
+// Calibrate from a sample rollout (see plan verification): pick so typical
+// values span ~[-1, 1]. G: tanh(a*(G/G_null - 1)); eigenfreqs: clamp((log10 w + C)/S).
+static constexpr double OBS_G_SCALE = 1.0;     // a
+static constexpr double OBS_VDOS_SHIFT = 3.0;  // C  (maps log10(w) in [-6,0] -> [-1,1])
+static constexpr double OBS_VDOS_SCALE = 3.0;  // S
+
 // Terminal objective reward for a jammed state, selected by reward_mode.
 //   DENSITY: w_phi*(phi - phi_null)
-//   SHEAR:   w_G*(G - G_null) at fixed pressure
+//   SHEAR:   w_G*(G/G_null - 1) at fixed pressure (normalized stiffening vs the
+//            fixed campaign null baseline; absolute fallback if G_null <= 0).
+//            G_now is precomputed by the caller (Env::G_obs) to avoid a second
+//            Hessian assembly.
 //   SPEED:   w_speed*(cost_null - total_eval)/cost_null when the packing meets the
 //            null density floor (phi >= phi_null); otherwise the DENSITY penalty
 //            term, which is <0 below the floor and pushes the policy back over it.
-static double objective_reward(const EnvConfig& cfg, const System& sys, double phi_now,
-                               double phi_null, double G_null, double cost_null,
-                               long total_eval) {
+static double objective_reward(const EnvConfig& cfg, double phi_now, double phi_null,
+                               double G_null, double cost_null, long total_eval,
+                               double G_now) {
   if (cfg.reward_mode == REWARD_SPEED) {
     if (phi_now >= phi_null && cost_null > 0.0)
       return cfg.w_speed * (cost_null - static_cast<double>(total_eval)) / cost_null;
     return cfg.w_phi * (phi_now - phi_null);  // below density floor
   }
   if (cfg.reward_mode == REWARD_SHEAR)
-    return cfg.w_G * (shear_modulus(sys) - G_null);
+    return (G_null > 0.0) ? cfg.w_G * (G_now / G_null - 1.0)
+                          : cfg.w_G * (G_now - G_null);
   return cfg.w_phi * (phi_now - phi_null);  // REWARD_DENSITY (default)
 }
 
@@ -65,6 +80,44 @@ void Env::reset(const System& proto, double phi_null_value, double G_null_value,
   total_eval = 0;
   disp = VectorXd();
   last_ev = evaluate(sys, 0.0, 0.0);
+  measure_obs_extras();  // G_obs + vdos_feat for the initial observation
+}
+
+// Measure the current shear modulus and a low-frequency VDOS summary of the
+// full-enthalpy spectrum into G_obs / vdos_feat. vdos_feat = [w1..w4, omega*]
+// (raw eigenfrequencies); observe() applies the log/tanh normalization. Skips
+// the eigensolve when cfg.vdos_obs is off, and degrades gracefully (features
+// stay 0) on loose/singular configs with no nonzero modes.
+void Env::measure_obs_extras() {
+  vdos_feat = VectorXd::Zero(N_VDOS_FEAT);
+  if (!cfg.obs_extras) {  // null runs never read the obs -> skip all extra work
+    G_obs = 0.0;
+    return;
+  }
+  G_obs = shear_modulus(sys);
+  if (!cfg.vdos_obs) return;
+
+  const int ndof = 2 * sys.N + 2;
+  // The full-enthalpy spectrum's low end is a cluster of ~0 modes (2 global
+  // translations + ~2 per rattler), then the real backbone band. We report the
+  // lowest N_VDOS_FEAT *real* eigenfrequencies (the soft-mode edge ~ boson-peak
+  // region, which tracks shear stability). Solve enough modes to clear the
+  // cluster (~2 + 2*rattler_frac*N) and expose N_VDOS_FEAT real modes; honor an
+  // explicit cfg.k_vdos if given.
+  int k = cfg.k_vdos > 0 ? cfg.k_vdos
+                         : std::max(16, static_cast<int>(std::lround(0.07 * ndof)) + 8);
+  k = std::min(k, ndof);
+
+  const VectorXd eig = eigvals_full_spectrum(sys, k);  // ascending, lowest k
+  std::vector<double> w;  // real (nonzero) eigenfrequencies, ascending
+  w.reserve(static_cast<size_t>(eig.size()));
+  for (int i = 0; i < eig.size(); ++i) {
+    const double wi = std::sqrt(std::max(eig[i], 0.0));
+    if (wi >= 1e-4) w.push_back(wi);  // drop the ~0 translation/rattler cluster
+  }
+  if (w.empty()) return;  // unjammed/singular: leave features at 0
+  for (int j = 0; j < N_VDOS_FEAT; ++j)  // lowest N real modes (saturate if fewer)
+    vdos_feat[j] = (j < static_cast<int>(w.size())) ? w[j] : w.back();
 }
 
 VectorXd Env::observe() const {
@@ -86,6 +139,14 @@ VectorXd Env::observe() const {
   o[7] = static_cast<double>(t) / std::max(1, cfg.T_cap);
   o[8] = prev_aP;
   o[9] = prev_aS;
+  // current shear modulus as normalized stiffening vs the null baseline
+  const double Gref = (G_null > 0.0) ? G_null : 1.0;
+  o[10] = std::tanh(OBS_G_SCALE * (G_obs / Gref - 1.0));
+  // low-frequency VDOS summary: log-scaled eigenfrequencies (w1..w4, omega*)
+  for (int j = 0; j < N_VDOS_FEAT; ++j) {
+    const double wj = (j < vdos_feat.size()) ? vdos_feat[j] : 0.0;
+    o[11 + j] = clampd((std::log10(wj + 1e-12) + OBS_VDOS_SHIFT) / OBS_VDOS_SCALE, -1.0, 1.0);
+  }
   return o;
 }
 
@@ -123,31 +184,37 @@ Transition Env::step(double aP_raw, double aS_raw) {
     if (!std::isfinite(ev.H)) oc = BLOWUP;
     else if (ev.maxOv > 0.9) oc = OVERLAP;
     else oc = MELT;
-  } else if (is_converged_unbiased(ev, sys, cfg.tol)) {
-    reward += objective_reward(cfg, sys, phi_now, phi_null, G_null, cost_null, total_eval);
-    disp = coord_displacement(sys.x, x_pre, sys.N);  // motion into the jammed state
-    dn = true;
-    oc = CONVERGED;
-  } else if (t >= cfg.T_cap || quiet >= cfg.quiesce_n) {
-    // finish-and-measure: release loads, relax up to the pressure-scaled budget
-    const int cap = finish_budget(P, cfg.finish_cap, cfg.finish_cap_max);
-    x_pre = sys.x;  // re-baseline: the release relaxation is the terminal motion
-    R = lbfgs_relax(sys, 0.0, 0.0, cap, cfg.lbfgs, cfg.tol);
-    total_eval += R.n_eval;
-    gamma_wrap(sys);
-    ev = evaluate(sys, 0.0, 0.0);
-    last_ev = ev;
-    phi_now = sys.phi();
+    G_obs = 0.0;  // skip the moduli/eigensolve on a blown-up state
+    vdos_feat = VectorXd::Zero(N_VDOS_FEAT);
+  } else {
+    measure_obs_extras();  // current G + VDOS (per-step obs and CONVERGED reward)
     if (is_converged_unbiased(ev, sys, cfg.tol)) {
-      reward += objective_reward(cfg, sys, phi_now, phi_null, G_null, cost_null, total_eval) -
-                cfg.trunc_pen;
+      reward += objective_reward(cfg, phi_now, phi_null, G_null, cost_null, total_eval, G_obs);
       disp = coord_displacement(sys.x, x_pre, sys.N);  // motion into the jammed state
-      oc = (quiet >= cfg.quiesce_n) ? QUIESCED : CAPPED;
-    } else {
-      reward -= cfg.fail_pen;
-      oc = UNFINISHED;
+      dn = true;
+      oc = CONVERGED;
+    } else if (t >= cfg.T_cap || quiet >= cfg.quiesce_n) {
+      // finish-and-measure: release loads, relax up to the pressure-scaled budget
+      const int cap = finish_budget(P, cfg.finish_cap, cfg.finish_cap_max);
+      x_pre = sys.x;  // re-baseline: the release relaxation is the terminal motion
+      R = lbfgs_relax(sys, 0.0, 0.0, cap, cfg.lbfgs, cfg.tol);
+      total_eval += R.n_eval;
+      gamma_wrap(sys);
+      ev = evaluate(sys, 0.0, 0.0);
+      last_ev = ev;
+      phi_now = sys.phi();
+      if (is_converged_unbiased(ev, sys, cfg.tol)) {
+        measure_obs_extras();  // refresh on the measured (released) jammed state
+        reward += objective_reward(cfg, phi_now, phi_null, G_null, cost_null, total_eval, G_obs) -
+                  cfg.trunc_pen;
+        disp = coord_displacement(sys.x, x_pre, sys.N);  // motion into the jammed state
+        oc = (quiet >= cfg.quiesce_n) ? QUIESCED : CAPPED;
+      } else {
+        reward -= cfg.fail_pen;
+        oc = UNFINISHED;
+      }
+      dn = true;
     }
-    dn = true;
   }
   reward -= cfg.c_step;  // per macro-step cost, every step
 
@@ -180,7 +247,9 @@ NullBaselines compute_null_baselines(System proto, EnvConfig cfg) {
   // and cost_null (its total lbfgs evaluate() count, the SPEED-mode baseline).
   // Force DENSITY mode on the local copy so the per-step reward path never pays
   // for moduli and never recurses into the speed baseline; we measure G once.
+  // Disable per-step obs extras too -- the null run's observations are unused.
   cfg.reward_mode = REWARD_DENSITY;
+  cfg.obs_extras = false;
   Env env;
   env.cfg = cfg;
   env.reset(proto, 0.0);
@@ -240,6 +309,8 @@ void register_env_impl(py::module_& m) {
       .def_readwrite("quiesce_n", &EnvConfig::quiesce_n)
       .def_readwrite("finish_cap", &EnvConfig::finish_cap)
       .def_readwrite("finish_cap_max", &EnvConfig::finish_cap_max)
+      .def_readwrite("vdos_obs", &EnvConfig::vdos_obs)
+      .def_readwrite("k_vdos", &EnvConfig::k_vdos)
       .def_readwrite("tol", &EnvConfig::tol)
       .def_readwrite("lbfgs", &EnvConfig::lbfgs);
 
@@ -254,6 +325,8 @@ void register_env_impl(py::module_& m) {
       .def_readonly("phi_null", &Env::phi_null)
       .def_readonly("G_null", &Env::G_null)
       .def_readonly("cost_null", &Env::cost_null)
+      .def_readonly("G_obs", &Env::G_obs)
+      .def_property_readonly("vdos_feat", [](const Env& e) { return VectorXd(e.vdos_feat); })
       .def_property_readonly("disp", [](const Env& e) { return VectorXd(e.disp); })
       .def_property_readonly("sys", [](Env& e) { return &e.sys; },
                              py::return_value_policy::reference_internal)

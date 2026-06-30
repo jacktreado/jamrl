@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 import jamrl._core as core
-from jamrl import config, learn, policy, rollout, storage
+from jamrl import config, learn, policy, rollout, seeding, storage
 from jamrl.config import Config
 
 
@@ -77,7 +77,10 @@ def test_reward_term_swaps_with_mode():
         phin.append(float(phi)); gnull.append(float(G))
 
     sf = core.SaveFlags(); sf.save_hessian = 0; sf.save_moduli = True; sf.save_contacts = False
-    eps_d = core.run_episodes_batch(proto, pol, seeds, ec_d, sf, 1, phin, [])
+    # Pass gnull to BOTH runs so the G observation (normalized by G_null) is
+    # identical across modes -> identical trajectories. Density ignores gnull for
+    # its reward (uses phi_null); only the terminal objective term differs.
+    eps_d = core.run_episodes_batch(proto, pol, seeds, ec_d, sf, 1, phin, gnull)
     eps_s = core.run_episodes_batch(proto, pol, seeds, ec_s, sf, 1, phin, gnull)
 
     compared = 0
@@ -87,7 +90,10 @@ def test_reward_term_swaps_with_mode():
         if not (ed["jammed"] and es["jammed"] and "G" in es):
             continue
         delta = float(es["rew"][-1]) - float(ed["rew"][-1])
-        expected = w_G * (es["G"] - gnull[i]) - dcfg.w_phi * (es["phi"] - phin[i])
+        # SHEAR objective is normalized w_G*(G/G_null - 1) when G_null>0.
+        gobj = (w_G * (es["G"] / gnull[i] - 1.0) if gnull[i] > 0.0
+                else w_G * (es["G"] - gnull[i]))
+        expected = gobj - dcfg.w_phi * (es["phi"] - phin[i])
         assert delta == pytest.approx(expected, rel=1e-6, abs=1e-6)
         compared += 1
     assert compared > 0  # at least one jammed episode actually exercised the swap
@@ -118,7 +124,7 @@ def test_old_config_defaults_to_density(tmp_path):
 # --------------------------------------------------------------------------- #
 def test_greedy_eval_emits_eval_dG(tmp_path):
     cfg = Config(N=32, P=1e-3, phi0=0.80, reward_mode="shear_modulus",
-                 hidden=(16, 16), eval_seeds=(101, 102, 103),
+                 hidden=(16, 16), eval_seeds=(101, 102, 103), n_null=8,
                  campaign_root=str(tmp_path), name="dG", seed=1)
     camp = storage.campaign_dir(cfg)
     storage.ensure_campaign_dirs(camp)
@@ -128,6 +134,29 @@ def test_greedy_eval_emits_eval_dG(tmp_path):
     stats = learn.greedy_eval(cfg, camp, 0)
     assert "eval_dG" in stats
     assert np.isfinite(stats["eval_dG"])
+
+
+def test_null_ensemble_builds_and_isolated(tmp_path):
+    """compute_null_ensemble writes a positive G_mean, is idempotent, and uses a
+    reserved seed namespace disjoint from training/eval seeds."""
+    cfg = Config(N=32, P=1e-3, phi0=0.80, reward_mode="shear_modulus",
+                 n_null=8, campaign_root=str(tmp_path), name="ens", seed=1)
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+
+    ens = rollout.compute_null_ensemble(cfg, camp)
+    assert os.path.exists(storage.null_ensemble_path(camp))
+    assert ens["n_jammed"] >= 1 and ens["G_mean"] > 0.0
+    assert len(ens["jammed_G"]) == ens["n_jammed"] == len(ens["jammed_seeds"])
+
+    # idempotent: a second call returns the cached file unchanged
+    assert rollout.compute_null_ensemble(cfg, camp)["G_mean"] == ens["G_mean"]
+
+    # reserved null seeds are disjoint from training and eval seeds
+    null_seeds = set(rollout.null_ensemble_seeds(cfg, cfg.n_null))
+    train_seeds = set(seeding.worker_seeds(cfg.seed, 0, 0, cfg.episodes_per_worker))
+    assert null_seeds.isdisjoint(train_seeds)
+    assert null_seeds.isdisjoint({int(s) for s in cfg.eval_seeds})
 
 
 def test_summary_roundtrips_eval_dG(tmp_path):

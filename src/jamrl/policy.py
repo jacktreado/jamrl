@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-OBS_DIM = 10  # must match jamcore::OBS_DIM
+OBS_DIM = 16  # must match jamcore::OBS_DIM (10 base + G + 5 VDOS features)
 ACT_DIM = 2   # must match jamcore::ACT_DIM
 
 

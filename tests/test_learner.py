@@ -92,13 +92,13 @@ def test_checkpoint_roundtrip(tmp_path):
 
     pol = PolicyNet(hidden=(16, 16))
     val = ValueNet(hidden=(16, 16))
-    norm = RunningNorm(10)
+    norm = RunningNorm(policy.OBS_DIM)
     learn.load_checkpoint(storage.checkpoint_path(camp, 1), pol, val, norm, Adam(), Adam())
     d = policy.load_policy_npz(storage.policy_path(camp, 1))
     core = policy.build_core_policy(d)
     rng = np.random.default_rng(2)
     for _ in range(5):
-        o = rng.standard_normal(10)
+        o = rng.standard_normal(policy.OBS_DIM)
         assert np.allclose(pol.mu(norm.normalize(o[None]))[0], core.forward(o), atol=1e-10)
 
 
@@ -191,13 +191,13 @@ def test_torch_policy_npz_matches_core():
     import torch
 
     pol = tb.TorchPolicy(hidden=(16, 16), logstd_init=-0.5)
-    norm = RunningNorm(10)
+    norm = RunningNorm(policy.OBS_DIM)
     rng = np.random.default_rng(3)
-    norm.update(rng.standard_normal((64, 10)))  # nontrivial normalizer
+    norm.update(rng.standard_normal((64, policy.OBS_DIM)))  # nontrivial normalizer
     d = tb.export_npz(pol, norm)
     core = policy.build_core_policy(d)
     for _ in range(5):
-        o = rng.standard_normal(10)
+        o = rng.standard_normal(policy.OBS_DIM)
         with torch.no_grad():
             mu_t = pol(torch.as_tensor(norm.normalize(o[None]).astype(np.float32))).numpy()[0]
         assert np.allclose(core.forward(o), mu_t, atol=1e-6)
@@ -221,14 +221,14 @@ def test_torch_checkpoint_roundtrip(tmp_path):
 
     pol = tb.TorchPolicy(hidden=(16, 16))
     val = tb.TorchValue(hidden=(16, 16))
-    norm = RunningNorm(10)
+    norm = RunningNorm(policy.OBS_DIM)
     op = torch.optim.Adam(pol.parameters())
     ov = torch.optim.Adam(val.parameters())
     tb.load_checkpoint(tb.checkpoint_path(camp, 1), pol, val, norm, op, ov)
     core = policy.build_core_policy(policy.load_policy_npz(storage.policy_path(camp, 1)))
     rng = np.random.default_rng(2)
     for _ in range(5):
-        o = rng.standard_normal(10)
+        o = rng.standard_normal(policy.OBS_DIM)
         with torch.no_grad():
             mu_t = pol(torch.as_tensor(norm.normalize(o[None]).astype(np.float32))).numpy()[0]
         assert np.allclose(core.forward(o), mu_t, atol=1e-6)

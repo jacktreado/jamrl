@@ -33,6 +33,7 @@ def analysis_dir(camp, r):      return _p(camp, "analysis", f"round_{r:04d}")
 def summary_parquet(camp):      return _p(camp, "analysis", "summary.parquet")
 def round_json(camp, r):        return _p(camp, "rounds", f"round_{r:04d}.json")
 def null_cache_dir(camp):       return _p(camp, "null_cache")
+def null_ensemble_path(camp):   return _p(camp, "null_ensemble.json")
 
 
 def ensure_campaign_dirs(camp):
@@ -95,8 +96,9 @@ def pack_trajectories(episodes: list[dict]) -> dict:
         phi_null.append(np.float32(np.clip(e["phi_null"], -1e6, 1e6)))
         steps.append(np.int16(e["steps"]))
 
-    obs_dim = obs[0].shape[1] if obs else 10
-    act_dim = act[0].shape[1] if act else 2
+    from jamrl.policy import ACT_DIM, OBS_DIM
+    obs_dim = obs[0].shape[1] if obs else OBS_DIM  # only the empty-episode fallback
+    act_dim = act[0].shape[1] if act else ACT_DIM
     return {
         "obs": np.concatenate(obs) if obs else np.zeros((0, obs_dim), np.float32),
         "act": np.concatenate(act) if act else np.zeros((0, act_dim), np.float32),

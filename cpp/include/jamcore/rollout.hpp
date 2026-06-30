@@ -41,6 +41,7 @@ struct EpisodeOut {
 
   bool has_moduli = false;
   double B = 0.0, G = 0.0;
+  double omega_star = 0.0;  // soft-mode edge: lowest real VDOS eigenfreq of the jammed state
 
   bool has_hessian = false;  // CSR of the full enthalpy Hessian
   VectorXd H_data;
