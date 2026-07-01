@@ -14,6 +14,7 @@ import os
 
 import numpy as np
 
+from jamrl import config as cfg_mod
 from jamrl import policy as pol_mod
 from jamrl import ppo, storage
 from jamrl.policy import OBS_DIM, RunningNorm
@@ -196,7 +197,8 @@ if HAS_TORCH:
 
     def learn_ppo_round(cfg, camp, r, traj) -> dict:
         """Torch PPO for one round: load/init -> update -> write npz + .pt."""
-        policy = TorchPolicy(hidden=cfg.hidden, logstd_init=cfg.logstd_init)
+        policy = TorchPolicy(hidden=cfg.hidden, act_dim=cfg_mod.act_dim(cfg),
+                             logstd_init=cfg.logstd_init)
         value = TorchValue(hidden=cfg.hidden)
         norm = RunningNorm(OBS_DIM)
         opt_p = torch.optim.Adam(policy.parameters(), lr=cfg.lr)

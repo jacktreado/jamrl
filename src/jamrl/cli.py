@@ -25,7 +25,8 @@ def _init_campaign(cfg: Config) -> str:
     seeding.write_provenance(camp, cfg)
     p0 = storage.policy_path(camp, 0)
     if not os.path.exists(p0):
-        policy.init_policy_npz(p0, hidden=cfg.hidden, logstd_init=cfg.logstd_init, seed=cfg.seed)
+        policy.init_policy_npz(p0, hidden=cfg.hidden, act_dim=config.act_dim(cfg),
+                               logstd_init=cfg.logstd_init, seed=cfg.seed)
     # Fixed shear-reward baseline: a per-campaign null ensemble (no-op otherwise).
     from jamrl import rollout
     ens = rollout.ensure_null_ensemble(cfg, camp)

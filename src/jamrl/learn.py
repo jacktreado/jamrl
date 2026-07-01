@@ -91,7 +91,8 @@ def _learn_ppo(cfg, camp, r, traj):
 
 
 def _learn_ppo_numpy(cfg, camp, r, traj):
-    pol = PolicyNet(hidden=cfg.hidden, logstd_init=cfg.logstd_init, seed=cfg.seed)
+    pol = PolicyNet(hidden=cfg.hidden, act_dim=config.act_dim(cfg),
+                    logstd_init=cfg.logstd_init, seed=cfg.seed)
     val = ValueNet(hidden=cfg.hidden, seed=cfg.seed + 1)
     norm = RunningNorm(OBS_DIM)
     opt_p, opt_v = Adam(cfg.lr), Adam(cfg.lr)

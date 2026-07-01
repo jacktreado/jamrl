@@ -172,7 +172,7 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
     pol = policy.build_core_policy(pol_npz)
 
     seeds = seeding.worker_seeds(cfg.seed, r, k, cfg.episodes_per_worker)
-    if cfg.reward_mode == "shear_modulus":
+    if cfg.reward_mode == "shear_modulus" and not cfg.paired_null_G:
         # Fixed campaign baseline: broadcast the ensemble mean G (and phi) to
         # every episode -> reward w_G*(G/G_mean - 1); no per-seed null runs.
         ens = ensure_null_ensemble(cfg, camp)
@@ -180,6 +180,9 @@ def run_rollout(cfg, camp, r: int, k: int) -> list[dict]:
         gnull = [ens["G_mean"]] * len(seeds)
         cnull = None
     else:
+        # Paired (common-random-numbers) baseline: score each episode against its
+        # OWN seed's zero-action null G, cancelling initial-config variance. Also
+        # the path for density/speed. Costs one null quench per seed (cached).
         phin, gnull, cnull = ensure_null_baselines(cfg, camp, seeds)
 
     proto = _core.make_system(cfg.N, int(seeds[0]) if seeds else 1, cfg.phi0, cfg.P)

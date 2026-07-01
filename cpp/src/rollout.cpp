@@ -125,7 +125,7 @@ static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64
   int guard = 0;
   while (!env.done && guard++ < cfg.T_cap + 4) {
     VectorXd a = pol.sample(obs, arng);
-    Transition tr = env.step(a[0], a[1]);
+    Transition tr = env.step(a);  // [aP, aS, VDOS-move coeffs...] (extra dims no-op if unused)
     obsL.push_back(obs);
     actL.push_back(a);
     rewL.push_back(tr.reward);
@@ -136,7 +136,7 @@ static EpisodeOut run_one_episode(const System& proto, const Policy& pol, uint64
   out.T = T;
   out.steps = T;
   out.obs.resize(T, OBS_DIM);
-  out.act.resize(T, ACT_DIM);
+  out.act.resize(T, pol.act_dim());  // 2 (box) + k_vdos_moves; matches the policy width
   out.rew.resize(T);
   for (int t = 0; t < T; ++t) {
     out.obs.row(t) = obsL[t].transpose();

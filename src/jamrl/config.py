@@ -34,10 +34,18 @@ class Config:
     # observation extras (per macro-step; full-enthalpy spectrum)
     vdos_obs: bool = True         # include the low-frequency VDOS summary in the obs
     k_vdos: int = 0               # # low modes to solve; 0 -> auto from N (~5th pct omega*)
+    # VDOS-directed agent moves: agent emits k_vdos_moves extra action coeffs that
+    # displace particles along the lowest soft modes each macro-step (needs vdos_obs).
+    # 0 disables (ACT_DIM stays 2); >0 => ACT_DIM = 2 + k_vdos_moves => fresh campaign.
+    k_vdos_moves: int = 0
+    vdos_move_amp: float = 0.02   # kick length along each unit soft mode (reduced coords)
     # reward
     reward_mode: str = "density"  # density | shear_modulus | speed
     w_phi: float = 400.0          # density-mode weight: w_phi*(phi - phi_null)
     w_G: float = 200.0            # shear-mode weight: w_G*(G/G_null - 1); tune so reward ~ O(1)
+    paired_null_G: bool = False   # shear: score each episode vs its OWN seed's zero-action null G
+                                  # (common-random-numbers baseline) instead of the ensemble mean;
+                                  # cancels initial-config variance. Costs 1 null quench/seed (cached).
     w_speed: float = 200.0        # speed-mode weight: w_speed*(cost_null - cost)/cost_null
     c_step: float = 0.01
     fail_pen: float = 2.0
@@ -233,6 +241,8 @@ def env_config(cfg: Config):
     ec.finish_cap_max = cfg.finish_cap_max
     ec.vdos_obs = cfg.vdos_obs
     ec.k_vdos = cfg.k_vdos
+    ec.k_vdos_moves = cfg.k_vdos_moves
+    ec.vdos_move_amp = cfg.vdos_move_amp
     ec.tol.ftol_abs = cfg.ftol_abs
     ec.tol.ftol_rel_P = cfg.ftol_rel_P
     ec.tol.ptol = cfg.ptol
@@ -253,3 +263,8 @@ def save_flags(cfg: Config, save_moduli: bool = True):
 
 def parallel_mode_code(cfg: Config) -> int:
     return 0 if cfg.parallel_mode == "episode" else 1
+
+
+def act_dim(cfg: Config) -> int:
+    """Policy action width: 2 box actions (aP, aS) + k_vdos_moves soft-mode coeffs."""
+    return 2 + int(cfg.k_vdos_moves)

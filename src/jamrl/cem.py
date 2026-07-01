@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from jamrl import config as cfg_mod
 from jamrl.policy import PolicyNet, RunningNorm
 
 
@@ -60,9 +61,10 @@ class CEM:
 
 
 def make_template(cfg) -> PolicyNet:
-    return PolicyNet(hidden=cfg.hidden, logstd_init=cfg.logstd_init, seed=cfg.seed)
+    return PolicyNet(hidden=cfg.hidden, act_dim=cfg_mod.act_dim(cfg),
+                     logstd_init=cfg.logstd_init, seed=cfg.seed)
 
 
 def candidate_policy(template: PolicyNet, flat) -> PolicyNet:
-    pol = PolicyNet(hidden=template.hidden, logstd_init=0.0, seed=0)
+    pol = PolicyNet(hidden=template.hidden, act_dim=template.act_dim, logstd_init=0.0, seed=0)
     return unflatten_into(pol, flat)

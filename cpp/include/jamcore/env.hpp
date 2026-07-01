@@ -58,6 +58,11 @@ struct EnvConfig {
   bool obs_extras = true;       // measure G + VDOS each step (off for null runs)
   bool vdos_obs = true;         // compute the low-frequency VDOS summary each step
   int k_vdos = 0;               // # low modes to solve; 0 -> auto from N (see env.cpp)
+  // VDOS-directed agent moves: the agent emits k_vdos_moves extra action coeffs c_j
+  // and each macro-step nudges particles along the retained lowest soft modes
+  // (x += vdos_move_amp * c_j * e_j) before the held-load relaxation. 0 disables.
+  int k_vdos_moves = 0;         // # soft-mode move coefficients (extra actions beyond aP,aS)
+  double vdos_move_amp = 0.02;  // kick length along each unit soft mode (reduced coords)
   // tolerances + minimizer
   Tols tol;
   LBFGSParams lbfgs;
@@ -94,11 +99,13 @@ struct Env {
   // step()/reset() from the current `sys` via measure_obs_extras().
   double G_obs = 0.0;   // current shear modulus G(sys)
   VectorXd vdos_feat;   // [w1, w2, w3, w4, omega*] raw eigenfrequencies (N_VDOS_FEAT)
+  MatrixXd vdos_vecs;   // retained low-mode eigenvectors (2N+2 x <=k_vdos_moves) for moves
 
   void reset(const System& proto, double phi_null_value, double G_null_value = 0.0,
              double cost_null_value = 0.0);
   VectorXd observe() const;
-  Transition step(double aP_raw, double aS_raw);
+  Transition step(const VectorXd& a);          // full action: [aP, aS, VDOS coeffs...]
+  Transition step(double aP_raw, double aS_raw);  // box-only convenience overload
   // Measure G + the low-frequency VDOS summary of the current `sys` into
   // G_obs / vdos_feat (one full-enthalpy Hessian assembly each).
   void measure_obs_extras();

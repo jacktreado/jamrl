@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 
-from jamrl import policy, seeding, storage
+from jamrl import config, policy, seeding, storage
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 _fake_counter = itertools.count(900001)
@@ -134,6 +134,7 @@ def submit(cfg, resume=False, test_only=False) -> int:
     start = resume_round(camp) if resume else 0
     if not os.path.exists(storage.policy_path(camp, start)):
         policy.init_policy_npz(storage.policy_path(camp, start), hidden=cfg.hidden,
+                               act_dim=config.act_dim(cfg),
                                logstd_init=cfg.logstd_init, seed=cfg.seed)
     # Compute the fixed shear-reward null ensemble once up front (no-op otherwise),
     # so rollout array tasks just load it. (run_rollout also computes it lazily

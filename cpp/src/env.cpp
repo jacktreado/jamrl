@@ -90,6 +90,7 @@ void Env::reset(const System& proto, double phi_null_value, double G_null_value,
 // stay 0) on loose/singular configs with no nonzero modes.
 void Env::measure_obs_extras() {
   vdos_feat = VectorXd::Zero(N_VDOS_FEAT);
+  if (cfg.k_vdos_moves > 0) vdos_vecs.resize(0, 0);  // reset retained move modes
   if (!cfg.obs_extras) {  // null runs never read the obs -> skip all extra work
     G_obs = 0.0;
     return;
@@ -107,6 +108,28 @@ void Env::measure_obs_extras() {
   int k = cfg.k_vdos > 0 ? cfg.k_vdos
                          : std::max(16, static_cast<int>(std::lround(0.07 * ndof)) + 8);
   k = std::min(k, ndof);
+
+  // With VDOS-directed moves enabled we also need the eigenVECTORS of the lowest
+  // real modes (to displace along them next step). Compute pairs then; else the
+  // cheaper eigenvalues-only path (byte-identical to before when k_vdos_moves==0).
+  if (cfg.k_vdos_moves > 0) {
+    const std::pair<VectorXd, MatrixXd> ep = eigvecs_full(sys, k);  // asc eigvals + vecs
+    const VectorXd& eig = ep.first;
+    const MatrixXd& V = ep.second;
+    std::vector<int> real_idx;  // spectrum indices of real (nonzero) modes, ascending
+    std::vector<double> w;
+    for (int i = 0; i < eig.size(); ++i) {
+      const double wi = std::sqrt(std::max(eig[i], 0.0));
+      if (wi >= 1e-4) { w.push_back(wi); real_idx.push_back(i); }
+    }
+    if (w.empty()) return;  // unjammed/singular: leave features + vecs empty
+    for (int j = 0; j < N_VDOS_FEAT; ++j)
+      vdos_feat[j] = (j < static_cast<int>(w.size())) ? w[j] : w.back();
+    const int keep = std::min<int>(cfg.k_vdos_moves, static_cast<int>(real_idx.size()));
+    vdos_vecs.resize(ndof, keep);  // eigenvectors of the lowest `keep` real modes
+    for (int j = 0; j < keep; ++j) vdos_vecs.col(j) = V.col(real_idx[j]);
+    return;
+  }
 
   const VectorXd eig = eigvals_full_spectrum(sys, k);  // ascending, lowest k
   std::vector<double> w;  // real (nonzero) eigenfrequencies, ascending
@@ -150,18 +173,35 @@ VectorXd Env::observe() const {
   return o;
 }
 
-Transition Env::step(double aP_raw, double aS_raw) {
-  const double aP = clampd(aP_raw, -1.0, 1.0);
-  const double aS = clampd(aS_raw, -1.0, 1.0);
+Transition Env::step(const VectorXd& a) {
+  const double aP = clampd(a.size() > 0 ? a[0] : 0.0, -1.0, 1.0);
+  const double aS = clampd(a.size() > 1 ? a[1] : 0.0, -1.0, 1.0);
   const double P = sys.P;
 
   // --- loads held during this macro-step (plan 3.5 + fixes 4.2/4.3) ---
   const double Peff = std::max(0.1 * P, P * (1.0 + cfg.kappa_P * aP));  // pressure floor
   const double dP = Peff - P;
-  const double A0 = sys.area();                                        // frozen area
+  const double A0 = sys.area();                                        // frozen area (box-only)
   const double sigF = cfg.kappa_sigma * P * A0 * aS;                   // frozen shear force
 
-  VectorXd x_pre = sys.x;  // pre-relaxation config (terminal-displacement baseline)
+  // --- VDOS-directed move: nudge particles along the retained lowest soft modes
+  // before the held-load relaxation settles them (eigenvector-following; plan (c)).
+  // Coeffs are the action components past [aP, aS]; each mode's particle part is
+  // unit-normalized so vdos_move_amp is a fixed reduced-coord kick length. ---
+  if (cfg.k_vdos_moves > 0 && a.size() > ACT_DIM && vdos_vecs.cols() > 0) {
+    const int n2 = 2 * sys.N;  // particle DOF (exclude box lnL, gamma)
+    const int kk = std::min<int>({cfg.k_vdos_moves, static_cast<int>(a.size()) - ACT_DIM,
+                                  static_cast<int>(vdos_vecs.cols())});
+    for (int j = 0; j < kk; ++j) {
+      const double cj = clampd(a[ACT_DIM + j], -1.0, 1.0);
+      if (cj == 0.0) continue;
+      VectorXd v = vdos_vecs.col(j).head(n2);  // particle-DOF part of soft mode j
+      const double nrm = v.norm();
+      if (nrm > 1e-12) sys.x.head(n2) += (cfg.vdos_move_amp * cj / nrm) * v;
+    }
+  }
+
+  VectorXd x_pre = sys.x;  // post-kick, pre-relaxation config (terminal-displacement baseline)
   RelaxResult R = lbfgs_relax(sys, dP, sigF, cfg.n_relax, cfg.lbfgs, cfg.tol);
   total_eval += R.n_eval;
   gamma_wrap(sys);
@@ -240,6 +280,13 @@ Transition Env::step(double aP_raw, double aS_raw) {
   return tr;
 }
 
+// Box-only convenience overload: no VDOS move (used by null baselines + tests).
+Transition Env::step(double aP_raw, double aS_raw) {
+  VectorXd a(2);
+  a << aP_raw, aS_raw;
+  return step(a);
+}
+
 NullBaselines compute_null_baselines(System proto, EnvConfig cfg) {
   // One zero-action episode -> all reward baselines: phi_null (density reached by
   // the null protocol; jamming minimization is path-dependent so a one-shot relax
@@ -311,6 +358,8 @@ void register_env_impl(py::module_& m) {
       .def_readwrite("finish_cap_max", &EnvConfig::finish_cap_max)
       .def_readwrite("vdos_obs", &EnvConfig::vdos_obs)
       .def_readwrite("k_vdos", &EnvConfig::k_vdos)
+      .def_readwrite("k_vdos_moves", &EnvConfig::k_vdos_moves)
+      .def_readwrite("vdos_move_amp", &EnvConfig::vdos_move_amp)
       .def_readwrite("tol", &EnvConfig::tol)
       .def_readwrite("lbfgs", &EnvConfig::lbfgs);
 
@@ -341,7 +390,11 @@ void register_env_impl(py::module_& m) {
       .def("step",
            [](Env& e, double aP, double aS) { return transition_to_dict(e.step(aP, aS)); },
            py::arg("a_P"), py::arg("a_sigma"),
-           "Apply one macro-step with raw actions; returns a transition dict.")
+           "Apply one macro-step with raw box actions; returns a transition dict.")
+      .def("step",
+           [](Env& e, const VectorXd& a) { return transition_to_dict(e.step(a)); },
+           py::arg("a"),
+           "Apply one macro-step with the full action vector [aP, aS, VDOS coeffs...].")
       .def("observe", [](const Env& e) { return VectorXd(e.observe()); });
 
   m.def("compute_null_phi", &compute_null_phi, py::arg("proto"), py::arg("cfg") = EnvConfig{},

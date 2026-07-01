@@ -159,6 +159,56 @@ def test_null_ensemble_builds_and_isolated(tmp_path):
     assert null_seeds.isdisjoint({int(s) for s in cfg.eval_seeds})
 
 
+def test_paired_null_G_cli_default():
+    """--paired-null-g parses to bool; defaults False (backward compatible)."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config")
+    config.add_arguments(parser)
+    assert config.from_args(parser.parse_args([])).paired_null_G is False
+    cfg = config.from_args(parser.parse_args(["--paired-null-G", "true"]))
+    assert cfg.paired_null_G is True
+
+
+def test_paired_null_G_uses_per_seed_baseline(tmp_path):
+    """paired_null_G=True scores each shear episode against its OWN seed's null G:
+    the per-seed null cache is populated for exactly the training seeds, and the
+    baselines genuinely differ across seeds (vs a single broadcast ensemble mean)."""
+    cfg = Config(N=32, P=1e-3, phi0=0.80, reward_mode="shear_modulus",
+                 paired_null_G=True, hidden=(16, 16), workers=1, episodes_per_worker=4,
+                 n_null=8, campaign_root=str(tmp_path), name="paired", seed=1)
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+    cfg.save_yaml(os.path.join(camp, "config.yaml"))
+    policy.init_policy_npz(storage.policy_path(camp, 0), hidden=cfg.hidden, seed=cfg.seed)
+
+    seeds = seeding.worker_seeds(cfg.seed, 0, 0, cfg.episodes_per_worker)
+    rollout.run_rollout(cfg, camp, 0, 0)
+
+    # per-seed null G computed + cached for exactly these training seeds
+    keys = [(cfg.N, cfg.P, int(s)) for s in seeds]
+    cachedG = storage.null_cache_get(camp, keys, field="G")
+    assert all(k in cachedG for k in keys), (keys, list(cachedG))
+    gnull = [cachedG[k] for k in keys]
+    assert all(np.isfinite(g) for g in gnull)
+    # genuinely per-seed: not a single broadcast value
+    assert len({round(g, 12) for g in gnull}) > 1, gnull
+    # paired path does NOT build the fixed ensemble baseline for training
+    assert not os.path.exists(storage.null_ensemble_path(camp))
+
+
+def test_paired_null_G_off_uses_ensemble(tmp_path):
+    """Default (paired_null_G=False) keeps the broadcast ensemble baseline."""
+    cfg = Config(N=32, P=1e-3, phi0=0.80, reward_mode="shear_modulus",
+                 hidden=(16, 16), workers=1, episodes_per_worker=4, n_null=8,
+                 campaign_root=str(tmp_path), name="broadcast", seed=1)
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+    cfg.save_yaml(os.path.join(camp, "config.yaml"))
+    policy.init_policy_npz(storage.policy_path(camp, 0), hidden=cfg.hidden, seed=cfg.seed)
+    rollout.run_rollout(cfg, camp, 0, 0)
+    assert os.path.exists(storage.null_ensemble_path(camp))
+
+
 def test_summary_roundtrips_eval_dG(tmp_path):
     cfg = Config(campaign_root=str(tmp_path), name="rt")
     camp = storage.campaign_dir(cfg)
