@@ -141,6 +141,53 @@ def test_run_local_end_to_end(tmp_path):
     assert np.isfinite(df["eval_success"]).all()
 
 
+def _run_logstd_campaign(tmp_path, backend, name, logstd_init, lo, hi):
+    """Run a short jamming campaign under a tight [logstd_min, logstd_max] window.
+
+    logstd_init is placed *outside* the window so the clamp must engage on the
+    very first update, then hold every round. Returns the per-round list of
+    saved log_std arrays (policies for rounds 1..rounds).
+    """
+    cfg = Config(N=32, P=1e-3, T_cap=12, n_relax=20, workers=2, episodes_per_worker=2,
+                 rounds=4, save_hessian="none", hidden=(16, 16), minibatch=256,
+                 ppo_epochs=6, lr=1e-3, ent_coef=0.05, logstd_init=logstd_init,
+                 logstd_min=lo, logstd_max=hi, backend=backend,
+                 campaign_root=str(tmp_path), name=name, seed=1)
+    camp = storage.campaign_dir(cfg)
+    storage.ensure_campaign_dirs(camp)
+    cfg.save_yaml(os.path.join(camp, "config.yaml"))
+    policy.init_policy_npz(storage.policy_path(camp, 0), hidden=cfg.hidden,
+                           logstd_init=cfg.logstd_init, seed=cfg.seed)
+    log_stds = []
+    for r in range(cfg.rounds):
+        for k in range(cfg.workers):
+            rollout.run_rollout(cfg, camp, r, k)
+        learn.learn_round(cfg, camp, r)  # writes policy_{r+1}
+        d = policy.load_policy_npz(storage.policy_path(camp, r + 1))
+        log_stds.append(np.asarray(d["log_std"], float))
+    return log_stds
+
+
+def _assert_logstd_clamps(log_stds, lo, hi, engaged):
+    """Bounds obeyed every round; the `engaged` bound is pinned on round 1."""
+    for r, ls in enumerate(log_stds):
+        assert ls.min() >= lo - 1e-6, (r, ls)  # 1e-6: float32 storage in torch
+        assert ls.max() <= hi + 1e-6, (r, ls)
+    # Init sits outside the window, so the first update must clamp to the near
+    # bound -- proving the clamp bites rather than the bound being trivially met.
+    assert np.allclose(log_stds[0], engaged, atol=1e-6), log_stds[0]
+
+
+def test_logstd_bounds_respected_numpy(tmp_path):
+    """Both clamps engage and every saved policy stays in-window (numpy)."""
+    # init above the ceiling -> clamp pulls log_std down to logstd_max
+    ceil = _run_logstd_campaign(tmp_path, "numpy", "ls_ceil", -0.4, -1.2, -0.7)
+    _assert_logstd_clamps(ceil, -1.2, -0.7, engaged=-0.7)
+    # init below the floor -> clamp pushes log_std up to logstd_min
+    flr = _run_logstd_campaign(tmp_path, "numpy", "ls_floor", -0.6, -0.3, 0.5)
+    _assert_logstd_clamps(flr, -0.3, 0.5, engaged=-0.3)
+
+
 # --------------------------------------------------------------------------- #
 # Torch backend (plan-specified PyTorch path)
 # --------------------------------------------------------------------------- #
@@ -232,6 +279,15 @@ def test_torch_checkpoint_roundtrip(tmp_path):
         with torch.no_grad():
             mu_t = pol(torch.as_tensor(norm.normalize(o[None]).astype(np.float32))).numpy()[0]
         assert np.allclose(core.forward(o), mu_t, atol=1e-6)
+
+
+@torch_only
+def test_logstd_bounds_respected_torch(tmp_path):
+    """Both clamps engage and every saved policy stays in-window (torch)."""
+    ceil = _run_logstd_campaign(tmp_path, "torch", "ls_ceil_t", -0.4, -1.2, -0.7)
+    _assert_logstd_clamps(ceil, -1.2, -0.7, engaged=-0.7)
+    flr = _run_logstd_campaign(tmp_path, "torch", "ls_floor_t", -0.6, -0.3, 0.5)
+    _assert_logstd_clamps(flr, -0.3, 0.5, engaged=-0.3)
 
 
 @torch_only
