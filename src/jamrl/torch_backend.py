@@ -151,8 +151,8 @@ if HAS_TORCH:
                 loss_pi.backward()
                 nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
                 opt_p.step()
-                with torch.no_grad():  # exploration floor on log_std
-                    policy.log_std.clamp_(min=cfg.logstd_min)
+                with torch.no_grad():  # exploration floor/ceiling on log_std
+                    policy.log_std.clamp_(min=cfg.logstd_min, max=cfg.logstd_max)
 
                 vpred = value(Xt[idx])
                 loss_v = cfg.vf_coef * 0.5 * ((vpred - ret_t[idx]) ** 2).mean()

@@ -63,6 +63,7 @@ class Config:
     vf_coef: float = 0.5
     logstd_init: float = -0.5
     logstd_min: float = -20.0     # exploration floor on log_std (raise to ~-1.6 to slow std decay)
+    logstd_max: float = 20.0      # exploration ceiling on log_std (lower to ~0 to cap sigma<=1 and keep the policy from going random)
     hidden: tuple = (64, 64)
     cem_pop: int = 64
     cem_elite_frac: float = 0.25
